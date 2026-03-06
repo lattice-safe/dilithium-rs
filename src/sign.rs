@@ -3,12 +3,15 @@
 //! Faithful port of `sign.c` from the CRYSTALS-Dilithium reference.
 //! All functions are parameterized by `DilithiumMode`.
 
+use alloc::{vec, vec::Vec};
+
 use crate::packing;
 use crate::params::*;
 use crate::poly::Poly;
 use crate::polyvec::*;
 use crate::symmetric::{shake256, shake256_multi};
 use subtle::ConstantTimeEq;
+use zeroize::Zeroize;
 
 /// Generate a Dilithium key pair.
 ///
@@ -26,12 +29,14 @@ pub fn keypair(mode: DilithiumMode, random_seed: &[u8; SEEDBYTES]) -> (Vec<u8>, 
     seedbuf[SEEDBYTES] = k as u8;
     seedbuf[SEEDBYTES + 1] = l as u8;
     shake256(&mut expanded, &seedbuf[..SEEDBYTES + 2]);
+    seedbuf.zeroize(); // S1: zeroize keying material
 
     let rho: [u8; SEEDBYTES] = expanded[..SEEDBYTES].try_into().unwrap();
-    let rhoprime: [u8; CRHBYTES] = expanded[SEEDBYTES..SEEDBYTES + CRHBYTES]
+    let mut rhoprime: [u8; CRHBYTES] = expanded[SEEDBYTES..SEEDBYTES + CRHBYTES]
         .try_into()
         .unwrap();
     let key: [u8; SEEDBYTES] = expanded[SEEDBYTES + CRHBYTES..].try_into().unwrap();
+    expanded.zeroize(); // S1: zeroize keying material
 
     // Expand matrix A
     let mut mat = vec![PolyVecL::default(); K_MAX];
@@ -42,6 +47,7 @@ pub fn keypair(mode: DilithiumMode, random_seed: &[u8; SEEDBYTES]) -> (Vec<u8>, 
     let mut s2 = PolyVecK::default();
     polyvecl_uniform_eta(mode, &mut s1, &rhoprime, 0);
     polyveck_uniform_eta(mode, &mut s2, &rhoprime, l as u16);
+    rhoprime.zeroize(); // S1: zeroize after sampling
 
     // t = A * NTT(s1)
     let mut s1hat = s1.clone();
@@ -110,6 +116,7 @@ pub fn sign_signature_internal(
     // Compute rhoprime = CRH(key, rnd, mu)
     let mut rhoprime = [0u8; CRHBYTES];
     shake256_multi(&mut rhoprime, &[&key, rnd, &mu]);
+    key.zeroize(); // S2: zeroize keying material after use
 
     // Expand matrix and transform vectors
     let mut mat = vec![PolyVecL::default(); K_MAX];

@@ -3,6 +3,8 @@
 //! Faithful port of `poly.c` from the CRYSTALS-Dilithium reference.
 //! Central type: `Poly` with N=256 coefficients in `Z_Q`.
 
+use alloc::vec;
+
 use crate::ntt;
 use crate::params::*;
 use crate::reduce::{caddq, montgomery_reduce, reduce32};

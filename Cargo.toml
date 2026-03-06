@@ -15,15 +15,17 @@ categories = ["cryptography", "no-std"]
 
 [features]
 default = ["std"]
-std = []
+std = ["getrandom"]
 serde = ["dep:serde"]
+js = ["getrandom/js"]
+simd = []
 
 [dependencies]
 sha3 = { version = "0.10", default-features = false }
 sha2 = { version = "0.10", default-features = false }
 serde = { version = "1", features = ["derive"], optional = true }
 zeroize = { version = "1", features = ["alloc"], default-features = false }
-getrandom = { version = "0.2", default-features = false }
+getrandom = { version = "0.2", default-features = false, optional = true }
 subtle = { version = "2", default-features = false }
 
 [lib]
@@ -45,6 +47,14 @@ path = "tests/coverage.rs"
 [dev-dependencies]
 rand = "0.8"
 sha3 = "0.10"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "dilithium_bench"
+harness = false
 
 [profile.release]
 opt-level = 3
+
+[package.metadata.docs.rs]
+all-features = true

@@ -1,0 +1,36 @@
+[package]
+name = "dilithium-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.dilithium]
+path = ".."
+
+[dependencies.sha3]
+version = "0.10"
+
+# Prevent this from interfering with workspaces
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "fuzz_sign_verify"
+path = "fuzz_targets/fuzz_sign_verify.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_unpack_sig"
+path = "fuzz_targets/fuzz_unpack_sig.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_from_bytes"
+path = "fuzz_targets/fuzz_from_bytes.rs"
+doc = false

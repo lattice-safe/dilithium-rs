@@ -26,7 +26,9 @@
 use alloc::{vec, vec::Vec};
 use core::fmt;
 
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
+#[cfg(feature = "getrandom")]
+use zeroize::Zeroize;
 
 pub use crate::params::DilithiumMode;
 use crate::params::*;
@@ -117,6 +119,9 @@ pub type MlDsaSignature = DilithiumSignature;
 
 impl DilithiumKeyPair {
     /// Generate a new key pair using OS entropy (FIPS 204 §6.1 `KeyGen`).
+    ///
+    /// Requires the `std` or `getrandom` feature (enabled by default).
+    #[cfg(feature = "getrandom")]
     pub fn generate(mode: DilithiumMode) -> Result<Self, DilithiumError> {
         let mut seed = [0u8; SEEDBYTES];
         getrandom(&mut seed).map_err(|()| DilithiumError::RandomError)?;
@@ -139,6 +144,8 @@ impl DilithiumKeyPair {
     /// Sign a message using pure ML-DSA (FIPS 204 §6.1 ML-DSA.Sign).
     ///
     /// Context string `ctx` is optional (max 255 bytes).
+    /// Requires the `std` or `getrandom` feature for randomized signing.
+    #[cfg(feature = "getrandom")]
     pub fn sign(&self, msg: &[u8], ctx: &[u8]) -> Result<DilithiumSignature, DilithiumError> {
         if ctx.len() > 255 {
             return Err(DilithiumError::BadArgument);
@@ -162,6 +169,8 @@ impl DilithiumKeyPair {
     ///
     /// The message is internally hashed with SHA-512 before signing.
     /// Context string `ctx` is optional (max 255 bytes).
+    /// Requires the `std` or `getrandom` feature for randomized signing.
+    #[cfg(feature = "getrandom")]
     pub fn sign_prehash(
         &self,
         msg: &[u8],
@@ -387,6 +396,7 @@ impl DilithiumSignature {
 }
 
 /// Fill buffer with random bytes via `getrandom` crate (WASM compatible).
+#[cfg(feature = "getrandom")]
 fn getrandom(buf: &mut [u8]) -> Result<(), ()> {
     ::getrandom::getrandom(buf).map_err(|_| ())
 }

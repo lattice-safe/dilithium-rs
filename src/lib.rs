@@ -75,6 +75,8 @@ pub mod safe_api;
 pub mod sign;
 #[doc(hidden)]
 pub mod symmetric;
+#[cfg(feature = "simd")]
+pub mod ntt_avx2;
 
 // ── Public re-exports (the SDK surface) ─────────────────────────
 pub use params::DilithiumMode;

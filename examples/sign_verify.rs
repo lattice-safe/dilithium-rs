@@ -10,13 +10,25 @@ fn main() {
 
     // Sign
     let sig = kp.sign(message, context).expect("signing failed");
-    println!("Signed {} bytes → {} byte signature", message.len(), sig.len());
+    println!(
+        "Signed {} bytes → {} byte signature",
+        message.len(),
+        sig.len()
+    );
 
     // Verify
     let ok = DilithiumKeyPair::verify(kp.public_key(), &sig, message, context, ML_DSA_65);
     println!("Verification: {}", if ok { "✅ PASS" } else { "❌ FAIL" });
 
     // Tampered message should fail
-    let tampered = DilithiumKeyPair::verify(kp.public_key(), &sig, b"tampered!", context, ML_DSA_65);
-    println!("Tampered:     {}", if tampered { "❌ FAIL (unexpected)" } else { "✅ REJECTED" });
+    let tampered =
+        DilithiumKeyPair::verify(kp.public_key(), &sig, b"tampered!", context, ML_DSA_65);
+    println!(
+        "Tampered:     {}",
+        if tampered {
+            "❌ FAIL (unexpected)"
+        } else {
+            "✅ REJECTED"
+        }
+    );
 }

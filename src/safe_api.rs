@@ -26,9 +26,9 @@
 use alloc::{vec, vec::Vec};
 use core::fmt;
 
-use zeroize::Zeroizing;
 #[cfg(feature = "getrandom")]
 use zeroize::Zeroize;
+use zeroize::Zeroizing;
 
 pub use crate::params::DilithiumMode;
 use crate::params::*;

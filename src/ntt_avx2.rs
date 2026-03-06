@@ -21,9 +21,9 @@
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::*;
 
-use crate::params::{N, Q};
 #[cfg(target_arch = "x86_64")]
 use crate::params::QINV;
+use crate::params::{N, Q};
 
 /// Signed QINV for Montgomery: we need the value such that Q * QINV ≡ 1 (mod 2^32).
 
@@ -48,14 +48,14 @@ unsafe fn montgomery_mul_avx2(zeta: __m256i, y: __m256i) -> __m256i {
     let a_even = _mm256_mul_epi32(zeta, y);
     // t_even_lo = (a_even_lo * QINV) as i32 → low 32 bits
     let a_even_lo = _mm256_mul_epi32(
-        a_even,     // a_even already has low bits in even positions
-        qinv_v,     // * QINV
+        a_even, // a_even already has low bits in even positions
+        qinv_v, // * QINV
     );
     // We only need low 32 bits of a_even_lo → extract as i32
     // t_even_full = t_even_lo (we only care about low 32) * Q → 64-bit
     let t_even_lo_32 = a_even_lo; // low 32 bits are what mullo would give
     let tq_even = _mm256_mul_epi32(t_even_lo_32, q_v); // t * Q, 64-bit
-    // r_even = (a_even - tq_even) >> 32
+                                                       // r_even = (a_even - tq_even) >> 32
     let r_even_64 = _mm256_sub_epi64(a_even, tq_even);
     let r_even_32 = _mm256_srli_epi64::<32>(r_even_64); // shift right 32
 
@@ -89,8 +89,14 @@ unsafe fn butterfly_avx2(a: &mut [i32; N], j: usize, len: usize, zeta: i32) {
 
     let t = montgomery_mul_avx2(zeta_v, y);
 
-    _mm256_storeu_si256(a.as_mut_ptr().add(j) as *mut __m256i, _mm256_add_epi32(x, t));
-    _mm256_storeu_si256(a.as_mut_ptr().add(j + len) as *mut __m256i, _mm256_sub_epi32(x, t));
+    _mm256_storeu_si256(
+        a.as_mut_ptr().add(j) as *mut __m256i,
+        _mm256_add_epi32(x, t),
+    );
+    _mm256_storeu_si256(
+        a.as_mut_ptr().add(j + len) as *mut __m256i,
+        _mm256_sub_epi32(x, t),
+    );
 }
 
 /// Inverse NTT butterfly on 8 elements.
@@ -111,6 +117,9 @@ unsafe fn inv_butterfly_avx2(a: &mut [i32; N], j: usize, len: usize, zeta_neg: i
 }
 
 /// AVX2-accelerated forward NTT.
+///
+/// # Safety
+/// Requires the AVX2 CPU feature. Use `ntt_simd` for safe runtime dispatch.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 pub unsafe fn ntt_avx2(a: &mut [i32; N]) {
@@ -141,6 +150,9 @@ pub unsafe fn ntt_avx2(a: &mut [i32; N]) {
 }
 
 /// AVX2-accelerated inverse NTT.
+///
+/// # Safety
+/// Requires the AVX2 CPU feature. Use `invntt_simd` for safe runtime dispatch.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 pub unsafe fn invntt_avx2(a: &mut [i32; N]) {
@@ -188,7 +200,9 @@ pub fn ntt_simd(a: &mut [i32; N]) {
     #[cfg(target_arch = "x86_64")]
     {
         if is_x86_feature_detected!("avx2") {
-            unsafe { ntt_avx2(a); }
+            unsafe {
+                ntt_avx2(a);
+            }
             return;
         }
     }
@@ -200,7 +214,9 @@ pub fn invntt_simd(a: &mut [i32; N]) {
     #[cfg(target_arch = "x86_64")]
     {
         if is_x86_feature_detected!("avx2") {
-            unsafe { invntt_avx2(a); }
+            unsafe {
+                invntt_avx2(a);
+            }
             return;
         }
     }

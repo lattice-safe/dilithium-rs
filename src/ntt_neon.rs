@@ -91,6 +91,9 @@ unsafe fn inv_butterfly_neon(a: &mut [i32; N], j: usize, len: usize, zeta_neg: i
 }
 
 /// NEON-accelerated forward NTT.
+///
+/// # Safety
+/// Requires AArch64 NEON (always available on aarch64). Use `ntt_simd` for safe dispatch.
 #[cfg(target_arch = "aarch64")]
 pub unsafe fn ntt_neon(a: &mut [i32; N]) {
     let mut k: usize = 0;
@@ -120,6 +123,9 @@ pub unsafe fn ntt_neon(a: &mut [i32; N]) {
 }
 
 /// NEON-accelerated inverse NTT.
+///
+/// # Safety
+/// Requires AArch64 NEON (always available on aarch64). Use `invntt_simd` for safe dispatch.
 #[cfg(target_arch = "aarch64")]
 pub unsafe fn invntt_neon(a: &mut [i32; N]) {
     let f: i32 = 41978;
@@ -165,22 +171,30 @@ pub fn ntt_simd(a: &mut [i32; N]) {
     #[cfg(target_arch = "aarch64")]
     {
         // NEON is always available on AArch64
-        unsafe { ntt_neon(a); }
+        unsafe {
+            ntt_neon(a);
+        }
         return;
     }
     #[allow(unreachable_code)]
-    { crate::ntt::ntt(a); }
+    {
+        crate::ntt::ntt(a);
+    }
 }
 
 /// Runtime-detected inverse NTT dispatch (AArch64).
 pub fn invntt_simd(a: &mut [i32; N]) {
     #[cfg(target_arch = "aarch64")]
     {
-        unsafe { invntt_neon(a); }
+        unsafe {
+            invntt_neon(a);
+        }
         return;
     }
     #[allow(unreachable_code)]
-    { crate::ntt::invntt_tomont(a); }
+    {
+        crate::ntt::invntt_tomont(a);
+    }
 }
 
 #[cfg(test)]

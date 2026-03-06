@@ -131,12 +131,7 @@ fn test_kat_dilithium2_sign() {
 }
 
 /// Helper to run full KAT (keygen + sign + verify) for any mode.
-fn run_kat_full(
-    mode: DilithiumMode,
-    expected_pk: &str,
-    expected_sk: &str,
-    expected_sig: &str,
-) {
+fn run_kat_full(mode: DilithiumMode, expected_pk: &str, expected_sk: &str, expected_sig: &str) {
     let mut rng = DeterministicRng::new();
 
     // Stream: m(32) → seed(32) → rnd(32)
@@ -149,15 +144,19 @@ fn run_kat_full(
     let mut pk_hash = [0u8; 32];
     shake256(&mut pk_hash, &pk);
     assert_eq!(
-        bytes_to_hex(&pk_hash), expected_pk,
-        "{:?}: public key hash mismatch", mode
+        bytes_to_hex(&pk_hash),
+        expected_pk,
+        "{:?}: public key hash mismatch",
+        mode
     );
 
     let mut sk_hash = [0u8; 32];
     shake256(&mut sk_hash, &sk);
     assert_eq!(
-        bytes_to_hex(&sk_hash), expected_sk,
-        "{:?}: secret key hash mismatch", mode
+        bytes_to_hex(&sk_hash),
+        expected_sk,
+        "{:?}: secret key hash mismatch",
+        mode
     );
 
     // rnd from stream (matches C internal randombytes call)
@@ -170,13 +169,16 @@ fn run_kat_full(
     let mut sig_hash = [0u8; 32];
     shake256(&mut sig_hash, &sig);
     assert_eq!(
-        bytes_to_hex(&sig_hash), expected_sig,
-        "{:?}: signature hash mismatch", mode
+        bytes_to_hex(&sig_hash),
+        expected_sig,
+        "{:?}: signature hash mismatch",
+        mode
     );
 
     assert!(
         sign::verify(mode, &sig, &m, C_CTX, &pk),
-        "{:?}: KAT signature verification failed", mode
+        "{:?}: KAT signature verification failed",
+        mode
     );
 }
 
@@ -184,7 +186,9 @@ fn run_kat_full(
 fn test_kat_dilithium3_full() {
     run_kat_full(
         DilithiumMode::Dilithium3,
-        D3_PK_HASH, D3_SK_HASH, D3_SIG_HASH,
+        D3_PK_HASH,
+        D3_SK_HASH,
+        D3_SIG_HASH,
     );
 }
 
@@ -192,6 +196,8 @@ fn test_kat_dilithium3_full() {
 fn test_kat_dilithium5_full() {
     run_kat_full(
         DilithiumMode::Dilithium5,
-        D5_PK_HASH, D5_SK_HASH, D5_SIG_HASH,
+        D5_PK_HASH,
+        D5_SK_HASH,
+        D5_SIG_HASH,
     );
 }

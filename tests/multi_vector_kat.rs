@@ -65,7 +65,9 @@ fn run_multi_vector(mode: DilithiumMode, n: usize) -> String {
         // 4. verify
         assert!(
             sign::verify(mode, &sig, &m, C_CTX, &pk),
-            "Verification failed at count={} for {:?}", _i, mode
+            "Verification failed at count={} for {:?}",
+            _i,
+            mode
         );
 
         // 5. hash pk/sk/sig and accumulate

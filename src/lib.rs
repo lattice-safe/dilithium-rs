@@ -78,6 +78,10 @@ extern crate alloc;
 // ── Internal modules (accessible but not in public docs) ────────
 #[doc(hidden)]
 pub mod ntt;
+#[cfg(feature = "simd")]
+pub mod ntt_avx2;
+#[cfg(feature = "simd")]
+pub mod ntt_neon;
 #[doc(hidden)]
 pub mod packing;
 pub mod params;
@@ -94,10 +98,6 @@ pub mod safe_api;
 pub mod sign;
 #[doc(hidden)]
 pub mod symmetric;
-#[cfg(feature = "simd")]
-pub mod ntt_avx2;
-#[cfg(feature = "simd")]
-pub mod ntt_neon;
 
 // ── Public re-exports (the SDK surface) ─────────────────────────
 pub use params::DilithiumMode;
@@ -108,4 +108,3 @@ pub use safe_api::{DilithiumError, DilithiumKeyPair, DilithiumSignature};
 pub use safe_api::MlDsaKeyPair;
 /// FIPS 204 type alias for `DilithiumSignature`.
 pub use safe_api::MlDsaSignature;
-

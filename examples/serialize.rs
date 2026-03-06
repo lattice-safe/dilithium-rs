@@ -18,10 +18,17 @@ fn main() {
     let pk_bytes = kp.public_key_bytes();
     let (mode, pk) = DilithiumKeyPair::from_public_key(&pk_bytes).expect("pk parse failed");
     assert_eq!(pk, kp.public_key());
-    println!("Public key export:   ✅ mode={:?}, {} bytes", mode, pk.len());
+    println!(
+        "Public key export:   ✅ mode={:?}, {} bytes",
+        mode,
+        pk.len()
+    );
 
     // Sign with original, verify with deserialized
     let sig = kp.sign(b"test", b"").expect("sign failed");
     let ok = DilithiumKeyPair::verify(kp2.public_key(), &sig, b"test", b"", ML_DSA_44);
-    println!("Cross-key verify:    {}", if ok { "✅ PASS" } else { "❌ FAIL" });
+    println!(
+        "Cross-key verify:    {}",
+        if ok { "✅ PASS" } else { "❌ FAIL" }
+    );
 }

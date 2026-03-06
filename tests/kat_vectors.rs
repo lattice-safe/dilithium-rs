@@ -6,6 +6,11 @@
 //!
 //! The C reference uses `snprintf(ctx, 13, "test_vectors")` producing a
 //! 13-byte context string that includes the null terminator.
+//!
+//! Stream consumption order (per iteration, count=0):
+//!   1. randombytes(m, 32)          — message
+//!   2. randombytes(seedbuf, 32)    — keygen seed (inside crypto_sign_keypair)
+//!   3. randombytes(rnd, 32)        — signing randomness (inside crypto_sign_signature)
 
 use sha3::digest::{ExtendableOutput, XofReader};
 use sha3::Shake128;
@@ -15,6 +20,7 @@ use dilithium::sign;
 use dilithium::symmetric::shake256;
 
 /// Deterministic RNG matching the C reference's test_vectors.c.
+/// Initial state: SHAKE128 absorbing empty input, then squeezing.
 struct DeterministicRng {
     reader: <Shake128 as ExtendableOutput>::Reader,
 }
@@ -38,21 +44,28 @@ fn bytes_to_hex(bytes: &[u8]) -> String {
 /// C reference context: "test_vectors\0" (13 bytes including null terminator)
 const C_CTX: &[u8; 13] = b"test_vectors\0";
 
-/// C reference expected values for Dilithium2 count=0, deterministic signing (rnd=0).
+// ================================================================
+// C reference expected values (count=0)
+// Key hashes confirmed bit-for-bit against C test_vectors{2,3,5}
+// Sig hashes use rnd from SHAKE128 stream (not rnd=0)
+// ================================================================
+
 const D2_M: &str = "7f9c2ba4e88f827d616045507605853ed73b8093f6efbc88eb1a6eacfa66ef26";
 const D2_PK_HASH: &str = "030116e37de6921adade6bbe80ea940ca24ff5a51153ed0f52c40873f947b9d6";
 const D2_SK_HASH: &str = "798e76ae4ac99e7cb6c3aa4b62951fd9b71b8d86eade71baee5742199e1cef01";
-const D2_SIG_HASH: &str = "f4365abfc7518dce6d2323ca21760dd8c36b10710349fd6fe25e1043d999bb60";
+const D2_SIG_HASH: &str = "f90926772cb59d35f2898fcb1e8eab7adf7e0268a53600542781b8064772725f";
 
-/// Dilithium3 (ML-DSA-65) expected values.
 const D3_PK_HASH: &str = "b1043ca0ab60b411fbb1bf6fcc852fd54ee1339d90e877b5b032c3b3d0f167e2";
 const D3_SK_HASH: &str = "320e90c853d708e52b91dc57d29f75fb63b82a1261c1eb491ce5cd1397d872aa";
-const D3_SIG_HASH: &str = "693f19fedc793bbaec06c0736b9f1bd7fe29efa87063a3899f461eef4bf644b0";
+const D3_SIG_HASH: &str = "4d08b5b628e125dbefaec5c62f105bf6a93c48ca84c62c9b5d7334108f998f21";
 
-/// Dilithium5 (ML-DSA-87) expected values.
 const D5_PK_HASH: &str = "39f5d1b3e15e1d0d5d26571140e5f9d63e6a128751f0581756d9144264328d2f";
 const D5_SK_HASH: &str = "d61328c2ec6eb79eb45990fc95f749fd7834c9e4b44f28bc934b894ed8ebd0dc";
-const D5_SIG_HASH: &str = "a38389b0e4b72996268d3cb0b65b178f52feb3b5678fd04df0a9c0d05d56748d";
+const D5_SIG_HASH: &str = "d154a3ffaefab2526e95324d1ce06e2e96a5cd62599c3a548ac44a9c21142a28";
+
+// ================================================================
+// Tests
+// ================================================================
 
 #[test]
 fn test_kat_dilithium2_keygen() {
@@ -85,18 +98,21 @@ fn test_kat_dilithium2_keygen() {
 }
 
 #[test]
-fn test_kat_dilithium2_sign_deterministic() {
+fn test_kat_dilithium2_sign() {
     let mode = DilithiumMode::Dilithium2;
     let mut rng = DeterministicRng::new();
 
+    // Stream: m(32) → seed(32) → rnd(32) — matches C reference order
     let mut m = [0u8; 32];
     rng.fill(&mut m);
     let mut seed = [0u8; SEEDBYTES];
     rng.fill(&mut seed);
     let (pk, sk) = sign::keypair(mode, &seed);
 
-    // Deterministic signing: rnd=0, ctx includes null terminator (C convention)
-    let rnd = [0u8; RNDBYTES];
+    // C reference calls randombytes(rnd, RNDBYTES) inside sign
+    let mut rnd = [0u8; RNDBYTES];
+    rng.fill(&mut rnd);
+
     let mut sig = vec![0u8; mode.signature_bytes()];
     sign::sign_signature(mode, &mut sig, &m, C_CTX, &rnd, &sk);
 
@@ -108,14 +124,13 @@ fn test_kat_dilithium2_sign_deterministic() {
         "Signature hash mismatch — signing diverged from C reference"
     );
 
-    // Verify signature
     assert!(
         sign::verify(mode, &sig, &m, C_CTX, &pk),
         "KAT signature verification failed"
     );
 }
 
-/// Helper to run a full KAT (keygen + sign + verify) for any mode.
+/// Helper to run full KAT (keygen + sign + verify) for any mode.
 fn run_kat_full(
     mode: DilithiumMode,
     expected_pk: &str,
@@ -124,6 +139,7 @@ fn run_kat_full(
 ) {
     let mut rng = DeterministicRng::new();
 
+    // Stream: m(32) → seed(32) → rnd(32)
     let mut m = [0u8; 32];
     rng.fill(&mut m);
     let mut seed = [0u8; SEEDBYTES];
@@ -144,7 +160,10 @@ fn run_kat_full(
         "{:?}: secret key hash mismatch", mode
     );
 
-    let rnd = [0u8; RNDBYTES];
+    // rnd from stream (matches C internal randombytes call)
+    let mut rnd = [0u8; RNDBYTES];
+    rng.fill(&mut rnd);
+
     let mut sig = vec![0u8; mode.signature_bytes()];
     sign::sign_signature(mode, &mut sig, &m, C_CTX, &rnd, &sk);
 
@@ -176,4 +195,3 @@ fn test_kat_dilithium5_full() {
         D5_PK_HASH, D5_SK_HASH, D5_SIG_HASH,
     );
 }
-

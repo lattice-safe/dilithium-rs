@@ -72,9 +72,34 @@ impl std::error::Error for DilithiumError {}
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DilithiumKeyPair {
+    #[cfg_attr(
+        feature = "serde",
+        serde(
+            serialize_with = "serde_zeroizing::serialize",
+            deserialize_with = "serde_zeroizing::deserialize"
+        )
+    )]
     privkey: Zeroizing<Vec<u8>>,
     pubkey: Vec<u8>,
     mode: DilithiumMode,
+}
+
+/// Helper module for serde on `Zeroizing<Vec<u8>>`.
+#[cfg(feature = "serde")]
+mod serde_zeroizing {
+    use super::*;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(val: &Zeroizing<Vec<u8>>, s: S) -> Result<S::Ok, S::Error> {
+        // Deref to &Vec<u8> which implements Serialize
+        let inner: &Vec<u8> = val;
+        inner.serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Zeroizing<Vec<u8>>, D::Error> {
+        let v = Vec::<u8>::deserialize(d)?;
+        Ok(Zeroizing::new(v))
+    }
 }
 
 /// FIPS 204 name alias for `DilithiumKeyPair`.

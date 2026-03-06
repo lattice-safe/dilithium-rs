@@ -102,8 +102,6 @@ mod tests {
         for i in 0..N {
             a[i] = (i as i32 * 37 + 11) % Q;
         }
-        let original = a;
-
         ntt(&mut a);
         invntt_tomont(&mut a);
 

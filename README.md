@@ -130,7 +130,7 @@ All dependencies support `no_std` and `wasm32-unknown-unknown`:
 ## Test Suite
 
 ```
-cargo test                              # all 63 tests
+cargo test                              # all 65 tests
 cargo test --features serde             # with serde
 cargo clippy -- -W clippy::pedantic     # 0 warnings
 ```
@@ -140,7 +140,7 @@ cargo clippy -- -W clippy::pedantic     # 0 warnings
 | Unit | 25 | NTT, reduce, rounding, symmetric, poly |
 | Round-trip | 17 | Sign/verify all modes, HashML-DSA, key validation |
 | Coverage | 17 | Edge cases, error paths, boundaries |
-| KAT | 2 | Bit-for-bit match with C reference |
+| KAT | 4 | Bit-for-bit match with C reference (all 3 modes) |
 | Doc-tests | 2 | Code examples compile and run |
 
 ## License

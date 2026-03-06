@@ -1,0 +1,25 @@
+# Build artifacts
+/target/
+debug/
+*.d
+
+# Cargo
+Cargo.lock
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment
+.env
+.env.*
+
+# Test / coverage output
+*.profraw
+*.profdata
+tarpaulin-report.html
+lcov.info

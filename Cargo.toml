@@ -7,6 +7,9 @@ authors = ["lattice-safe contributors"]
 description = "Pure Rust implementation of ML-DSA (FIPS 204) / CRYSTALS-Dilithium post-quantum digital signature scheme"
 license = "MIT"
 readme = "README.md"
+repository = "https://github.com/lattice-safe/dilithium-rs"
+homepage = "https://github.com/lattice-safe/dilithium-rs"
+documentation = "https://docs.rs/dilithium-rs"
 keywords = ["ml-dsa", "fips-204", "dilithium", "post-quantum", "cryptography"]
 categories = ["cryptography", "no-std"]
 

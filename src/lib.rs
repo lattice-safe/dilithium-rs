@@ -7,10 +7,29 @@
 //!
 //! - **FIPS 204 compliant** — supports pure ML-DSA and HashML-DSA (pre-hash)
 //! - **`no_std` compatible** — works on embedded and WASM targets
-//! - **WASM ready** — all dependencies support `wasm32-unknown-unknown`
+//! - **WASM ready** — enable the `js` feature for browser environments
 //! - **Zeroize** — private key material is automatically zeroized on drop
 //! - **Constant-time** — verification uses constant-time comparison
 //! - **Optional serde** — enable the `serde` feature for serialization
+//! - **SIMD acceleration** — AVX2 (x86_64) and NEON (AArch64) NTT behind `simd`
+//!
+//! # Feature Flags
+//!
+//! | Feature | Default | Description |
+//! |---------|---------|-------------|
+//! | `std`   | ✅      | Enables `getrandom` for OS entropy (`generate`, `sign`, `sign_prehash`) |
+//! | `serde` | ❌      | Enables `Serialize`/`Deserialize` for key pairs, signatures, and modes |
+//! | `simd`  | ❌      | Enables AVX2 (x86_64) and NEON (AArch64) NTT acceleration |
+//! | `js`    | ❌      | Enables `getrandom/js` for WASM browser targets |
+//!
+//! # Platform Support
+//!
+//! | Target | Build | Notes |
+//! |--------|-------|-------|
+//! | x86_64 Linux/macOS | ✅ | Full support, AVX2 SIMD optional |
+//! | AArch64 (Apple Silicon, ARM) | ✅ | Full support, NEON SIMD optional |
+//! | `wasm32-unknown-unknown` | ✅ | Requires `--no-default-features`, add `js` for entropy |
+//! | `thumbv7em-none-eabihf` | ✅ | Requires `--no-default-features`, deterministic APIs only |
 //!
 //! # Quick Start
 //!
@@ -77,6 +96,8 @@ pub mod sign;
 pub mod symmetric;
 #[cfg(feature = "simd")]
 pub mod ntt_avx2;
+#[cfg(feature = "simd")]
+pub mod ntt_neon;
 
 // ── Public re-exports (the SDK surface) ─────────────────────────
 pub use params::DilithiumMode;

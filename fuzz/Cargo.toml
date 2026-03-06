@@ -12,6 +12,7 @@ libfuzzer-sys = "0.4"
 
 [dependencies.dilithium]
 path = ".."
+package = "dilithium-rs"
 
 [dependencies.sha3]
 version = "0.10"

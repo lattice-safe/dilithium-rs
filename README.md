@@ -18,8 +18,9 @@
 | Zeroization of secrets | ✅ |
 | `no_std` / WASM compatible | ✅ |
 | Optional `serde` support | ✅ |
-| NIST KAT vectors validated | ✅ |
-| 0 `unsafe` blocks | ✅ |
+| NIST KAT vectors — bit-for-bit match with C reference | ✅ |
+| SIMD acceleration (AVX2 + NEON) | ✅ |
+| 0 `unsafe` blocks (core library) | ✅ |
 
 ## Quick Start
 
@@ -119,29 +120,67 @@ All dependencies support `no_std` and `wasm32-unknown-unknown`:
 - `zeroize` — secret material cleanup
 - `getrandom` — OS entropy (uses `crypto.getRandomValues` in WASM)
 
+## Benchmarks
+
+Measured on Apple Silicon (M-series), `--release`, 10,000 iterations.
+Rust uses Criterion; C reference compiled with `cc -O3`.
+
+| Operation | Mode | Rust (µs) | C ref (µs) | Ratio |
+|-----------|------|-----------|-----------|-------|
+| keygen | ML-DSA-44 | 48.9 | 50.8 | **0.96×** ✅ |
+| keygen | ML-DSA-65 | 79.2 | 94.8 | **0.84×** ✅ |
+| keygen | ML-DSA-87 | 130.3 | 135.9 | **0.96×** ✅ |
+| sign | ML-DSA-44 | 126.1 | 215.7 | **0.58×** ✅ |
+| sign | ML-DSA-65 | 529.9 | 354.3 | 1.50× |
+| sign | ML-DSA-87 | 284.2 | 442.6 | **0.64×** ✅ |
+| verify | ML-DSA-44 | 53.2 | 53.8 | **0.99×** ✅ |
+| verify | ML-DSA-65 | 85.1 | 84.6 | 1.01× |
+| verify | ML-DSA-87 | 135.3 | 143.5 | **0.94×** ✅ |
+
+> Sign times have high variance due to rejection sampling.
+> Ratios <1.0 mean Rust is faster.
+
+```bash
+cargo bench                             # run benchmarks
+```
+
 ## Security
 
-- **0 `unsafe` blocks** in production code
+- **0 `unsafe` blocks** in core library (SIMD modules use `unsafe` behind `simd` feature)
 - **Constant-time** verification via `subtle::ConstantTimeEq`
 - **Zeroize** — private keys auto-zeroed on drop, seeds/rnd zeroed after use
 - **NIST KAT** — bit-for-bit match with C reference (pk, sk, sig hashes)
 - **Key validation** — `from_keys()` validates rho consistency + `tr = H(pk)`
+- **Fuzz tested** — 3 targets, 41M+ executions, 0 crashes
+
+See [SECURITY.md](SECURITY.md) for responsible disclosure and scope.
 
 ## Test Suite
 
 ```
-cargo test                              # all 65 tests
+cargo test                              # all 73 tests
 cargo test --features serde             # with serde
+cargo test --features simd              # with SIMD
 cargo clippy -- -W clippy::pedantic     # 0 warnings
 ```
 
 | Suite | Tests | What |
 |-------|-------|------|
-| Unit | 25 | NTT, reduce, rounding, symmetric, poly |
+| Unit | 30 | NTT, reduce, rounding, symmetric, poly, SIMD |
 | Round-trip | 17 | Sign/verify all modes, HashML-DSA, key validation |
 | Coverage | 17 | Edge cases, error paths, boundaries |
 | KAT | 4 | Bit-for-bit match with C reference (all 3 modes) |
+| Multi-vector KAT | 3 | 100 vectors × 3 modes accumulated hash |
 | Doc-tests | 2 | Code examples compile and run |
+
+## Feature Flags
+
+| Feature | Default | Description |
+|---------|---------|-------------|
+| `std`   | ✅      | OS entropy for `generate`, `sign`, `sign_prehash` |
+| `serde` | ❌      | `Serialize`/`Deserialize` for key pairs and signatures |
+| `simd`  | ❌      | AVX2 (x86_64) and NEON (AArch64) NTT acceleration |
+| `js`    | ❌      | `getrandom/js` for WASM browser targets |
 
 ## License
 

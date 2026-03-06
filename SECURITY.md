@@ -12,7 +12,7 @@ If you discover a security vulnerability in `dilithium-rs`, please report it
 responsibly:
 
 1. **Do NOT open a public GitHub issue.**
-2. Email **security@lattice-safe.dev** with:
+2. Email **latticesafe@gmail.com** with:
    - A description of the vulnerability
    - Steps to reproduce
    - Impact assessment

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-20
+
 ### Security
 - **F1**: Fixed `simd` feature failing to compile on x86_64 (undefined `QINV32`,
   missing `ZETAS` import in `ntt_avx2.rs`)
@@ -114,5 +116,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 65 tests (25 unit, 17 coverage, 4 KAT, 17 round-trip, 2 doc-tests)
 - Zero `unsafe` blocks
 
+[0.3.0]: https://github.com/lattice-safe/dilithium-rs/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/lattice-safe/dilithium-rs/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/lattice-safe/dilithium-rs/releases/tag/v0.1.0

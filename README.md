@@ -99,7 +99,7 @@ let kp = DilithiumKeyPair::from_keys(sk_bytes, pk_bytes, ML_DSA_65).unwrap();
 
 ```toml
 [dependencies]
-dilithium-rs = { version = "0.1", features = ["serde"] }
+dilithium-rs = { version = "0.3", features = ["serde"] }
 ```
 
 ```rust
@@ -111,7 +111,7 @@ let kp: DilithiumKeyPair = serde_json::from_str(&json).unwrap();
 
 ```toml
 [dependencies]
-dilithium-rs = { version = "0.1", default-features = false }
+dilithium-rs = { version = "0.3", default-features = false }
 ```
 
 All dependencies support `no_std` and `wasm32-unknown-unknown`:

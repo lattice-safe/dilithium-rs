@@ -163,7 +163,8 @@ fn test_key_validation_wrong_pubkey_size() {
     // Correct-length secret key but wrong-length public key: this must reach
     // the public-key size check (not short-circuit on the secret key).
     let kp = DilithiumKeyPair::generate(DilithiumMode::Dilithium2).expect("keygen failed");
-    let result = DilithiumKeyPair::from_keys(kp.private_key(), &[0u8; 100], DilithiumMode::Dilithium2);
+    let result =
+        DilithiumKeyPair::from_keys(kp.private_key(), &[0u8; 100], DilithiumMode::Dilithium2);
     assert_eq!(result.unwrap_err(), dilithium::DilithiumError::FormatError);
 }
 

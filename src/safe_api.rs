@@ -29,8 +29,8 @@ use core::fmt;
 use zeroize::Zeroize;
 use zeroize::Zeroizing;
 
-pub use crate::params::DilithiumMode;
 use crate::packing;
+pub use crate::params::DilithiumMode;
 use crate::params::*;
 use crate::polyvec::*;
 use crate::sign;

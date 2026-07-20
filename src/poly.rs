@@ -14,7 +14,7 @@ use crate::symmetric::{Stream128, Stream256};
 const STREAM128_BLOCKBYTES: usize = 168; // SHAKE128_RATE
 const STREAM256_BLOCKBYTES: usize = 136; // SHAKE256_RATE
 
-/// A polynomial in `Z_Q`[X]/(X^N + 1).
+/// A polynomial in the ring `Z_Q[X]/(X^N + 1)`.
 #[derive(Clone)]
 pub struct Poly {
     pub coeffs: [i32; N],
@@ -108,10 +108,7 @@ impl Poly {
         {
             crate::ntt_neon::ntt_simd(&mut self.coeffs);
         }
-        #[cfg(not(all(
-            feature = "simd",
-            any(target_arch = "x86_64", target_arch = "aarch64")
-        )))]
+        #[cfg(not(all(feature = "simd", any(target_arch = "x86_64", target_arch = "aarch64"))))]
         crate::ntt::ntt(&mut self.coeffs);
     }
 
@@ -128,10 +125,7 @@ impl Poly {
         {
             crate::ntt_neon::invntt_simd(&mut self.coeffs);
         }
-        #[cfg(not(all(
-            feature = "simd",
-            any(target_arch = "x86_64", target_arch = "aarch64")
-        )))]
+        #[cfg(not(all(feature = "simd", any(target_arch = "x86_64", target_arch = "aarch64"))))]
         crate::ntt::invntt_tomont(&mut self.coeffs);
     }
 
@@ -229,7 +223,7 @@ impl Poly {
     /// Sample polynomial with uniformly random coefficients in [0, Q-1]
     /// via rejection sampling on output of SHAKE128.
     pub fn uniform(a: &mut Poly, seed: &[u8; SEEDBYTES], nonce: u16) {
-        const NBLOCKS: usize = (768 + STREAM128_BLOCKBYTES - 1) / STREAM128_BLOCKBYTES;
+        const NBLOCKS: usize = 768_usize.div_ceil(STREAM128_BLOCKBYTES);
 
         let mut stream = Stream128::init(seed, nonce);
         let mut buf = [0u8; NBLOCKS * STREAM128_BLOCKBYTES + 2];
@@ -291,9 +285,9 @@ impl Poly {
     /// Sample polynomial with coefficients in [-ETA, ETA] via SHAKE256.
     pub fn uniform_eta(mode: DilithiumMode, a: &mut Poly, seed: &[u8; CRHBYTES], nonce: u16) {
         let nblocks = if mode.eta() == 2 {
-            (136 + STREAM256_BLOCKBYTES - 1) / STREAM256_BLOCKBYTES
+            136_usize.div_ceil(STREAM256_BLOCKBYTES)
         } else {
-            (227 + STREAM256_BLOCKBYTES - 1) / STREAM256_BLOCKBYTES
+            227_usize.div_ceil(STREAM256_BLOCKBYTES)
         };
 
         let mut stream = Stream256::init(seed, nonce);
@@ -312,7 +306,7 @@ impl Poly {
     /// by unpacking SHAKE256 stream output.
     pub fn uniform_gamma1(mode: DilithiumMode, a: &mut Poly, seed: &[u8; CRHBYTES], nonce: u16) {
         let polyz_packed = mode.polyz_packedbytes();
-        let nblocks = (polyz_packed + STREAM256_BLOCKBYTES - 1) / STREAM256_BLOCKBYTES;
+        let nblocks = polyz_packed.div_ceil(STREAM256_BLOCKBYTES);
 
         let mut stream = Stream256::init(seed, nonce);
         let mut buf = vec![0u8; nblocks * STREAM256_BLOCKBYTES];

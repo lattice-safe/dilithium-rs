@@ -28,7 +28,10 @@ fn test_error_display_all_variants() {
         "random number generation failed"
     );
     assert_eq!(DilithiumError::FormatError.to_string(), "invalid format");
-    assert_eq!(DilithiumError::BadSignature.to_string(), "invalid signature");
+    assert_eq!(
+        DilithiumError::BadSignature.to_string(),
+        "invalid signature"
+    );
     assert_eq!(DilithiumError::BadArgument.to_string(), "invalid argument");
     assert_eq!(
         DilithiumError::InvalidKey.to_string(),
@@ -229,7 +232,8 @@ fn test_sign_deterministic_ctx_too_long() {
     let kp = DilithiumKeyPair::generate_deterministic(DilithiumMode::Dilithium2, &[0u8; 32]);
     let long_ctx = vec![0u8; 256];
     assert_eq!(
-        kp.sign_deterministic(b"m", &long_ctx, &[0u8; 32]).unwrap_err(),
+        kp.sign_deterministic(b"m", &long_ctx, &[0u8; 32])
+            .unwrap_err(),
         DilithiumError::BadArgument
     );
 }
@@ -296,7 +300,13 @@ fn test_lowlevel_sign_hash_roundtrip() {
             0
         );
         assert!(sign::verify_hash(mode, &sig, b"msg", b"c", kp.public_key()));
-        assert!(!sign::verify_hash(mode, &sig, b"msX", b"c", kp.public_key()));
+        assert!(!sign::verify_hash(
+            mode,
+            &sig,
+            b"msX",
+            b"c",
+            kp.public_key()
+        ));
     }
 }
 
@@ -324,7 +334,9 @@ fn test_verify_all_zero_signature_rejected() {
 
 fn valid_sig_and_keys(mode: DilithiumMode) -> (Vec<u8>, Vec<u8>) {
     let kp = DilithiumKeyPair::generate_deterministic(mode, &[2u8; 32]);
-    let sig = kp.sign_deterministic(b"hint test", b"", &[0u8; 32]).unwrap();
+    let sig = kp
+        .sign_deterministic(b"hint test", b"", &[0u8; 32])
+        .unwrap();
     (sig.as_bytes().to_vec(), kp.public_key().to_vec())
 }
 

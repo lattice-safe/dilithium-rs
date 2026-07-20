@@ -32,16 +32,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **F11**: Migrated `deny.toml` to the cargo-deny v2 schema
 
 ### Changed
+- **MSRV raised to 1.85** (from 1.70): current dependencies (e.g. `zeroize`
+  1.9) require the 2024 edition. CI's MSRV job now pins `1.85`
 - `sign::sign_signature` / `sign::sign_hash` now return `-1` on bad key/buffer
   lengths; `sign_signature_internal` returns 0 instead of panicking
 
 ### Fixed
-- **F12**: Silenced `unused_imports` warning for `Q` in `ntt_avx2.rs` on
-  non-x86_64 targets — the import is now gated to the architectures/tests
-  that reference it
-- **F13**: Silenced `unused_must_use` warning in `benches/dilithium_bench.rs`
-  by discarding the `verify` result explicitly. `--all-features --all-targets`
-  now builds with **0 warnings**
+- **F12**: Gated the SIMD-only params imports so cross-arch builds are
+  warning-free: `Q` in `ntt_avx2.rs` (unused on non-x86_64) and
+  `ZETAS`/`Q`/`QINV` in `ntt_neon.rs` (unused on non-aarch64, e.g. the x86_64
+  CI runner) are now scoped to the architectures/tests that reference them
+- **F13**: Silenced `unused_must_use` in `benches/dilithium_bench.rs` and
+  removed needless `return`s in `poly.rs`, so
+  `cargo clippy --all-features --all-targets -- -D warnings` passes on both
+  x86_64 and aarch64
+- **F14**: Applied `cargo fmt` across the tree so `cargo fmt --check` passes
 
 ### Tooling
 - Added `Dockerfile` (minimal `rust:1-alpine` / musl image) that builds and

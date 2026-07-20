@@ -47,6 +47,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `cargo clippy --all-features --all-targets -- -D warnings` passes on both
   x86_64 and aarch64
 - **F14**: Applied `cargo fmt` across the tree so `cargo fmt --check` passes
+- **F15**: Dependency-audit CI now runs `cargo deny` on the runner's stable
+  toolchain (the pinned container action shipped a Cargo too old to parse
+  edition-2024 dependencies). Fresh resolution now pulls patched
+  `crossbeam-epoch` (≥ 0.9.20, RUSTSEC-2026-0204) and `rand` (≥ 0.8.7,
+  RUSTSEC-2026-0097) — both dev-only, so the shipped crate was never affected
 
 ### Tooling
 - Added `Dockerfile` (minimal `rust:1-alpine` / musl image) that builds and

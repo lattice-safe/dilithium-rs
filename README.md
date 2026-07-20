@@ -99,7 +99,7 @@ let kp = DilithiumKeyPair::from_keys(sk_bytes, pk_bytes, ML_DSA_65).unwrap();
 
 ```toml
 [dependencies]
-dilithium-rs = { version = "0.1", features = ["serde"] }
+dilithium-rs = { version = "0.3", features = ["serde"] }
 ```
 
 ```rust
@@ -111,7 +111,7 @@ let kp: DilithiumKeyPair = serde_json::from_str(&json).unwrap();
 
 ```toml
 [dependencies]
-dilithium-rs = { version = "0.1", default-features = false }
+dilithium-rs = { version = "0.3", default-features = false }
 ```
 
 All dependencies support `no_std` and `wasm32-unknown-unknown`:
@@ -158,20 +158,42 @@ See [SECURITY.md](SECURITY.md) for responsible disclosure and scope.
 ## Test Suite
 
 ```
-cargo test                              # all 73 tests
+cargo test --all-features               # all 112 tests
 cargo test --features serde             # with serde
 cargo test --features simd              # with SIMD
-cargo clippy -- -W clippy::pedantic     # 0 warnings
+cargo clippy --all-features -- -W clippy::pedantic  # 0 warnings
 ```
 
 | Suite | Tests | What |
 |-------|-------|------|
 | Unit | 30 | NTT, reduce, rounding, symmetric, poly, SIMD |
-| Round-trip | 17 | Sign/verify all modes, HashML-DSA, key validation |
+| Round-trip | 23 | Sign/verify all modes, HashML-DSA, key validation, low-level guards |
 | Coverage | 17 | Edge cases, error paths, boundaries |
+| API coverage | 30 | Error `Display`, mode tags, serialization error paths, hint decodings |
+| Serde coverage | 3 | Serde round-trips for keys, signatures, modes, errors |
 | KAT | 4 | Bit-for-bit match with C reference (all 3 modes) |
 | Multi-vector KAT | 3 | 100 vectors × 3 modes accumulated hash |
 | Doc-tests | 2 | Code examples compile and run |
+
+**Line coverage: 99.38%** (`cargo tarpaulin --features serde`, enforced ≥ 90% in CI).
+
+### Docker
+
+Build and run the full suite in a minimal Alpine (musl) container — no local
+Rust toolchain required:
+
+```bash
+docker build -t dilithium-rs-test .      # rust:1-alpine base, pure-Rust deps
+docker run --rm dilithium-rs-test        # cargo test --all-features (default)
+docker run --rm -it dilithium-rs-test sh # interactive shell
+```
+
+Measure line coverage in a glibc container (mirrors the CI tarpaulin job):
+
+```bash
+docker build -f Dockerfile.coverage -t dilithium-rs-coverage .
+docker run --rm dilithium-rs-coverage    # cargo tarpaulin --features serde --fail-under 90
+```
 
 ## Feature Flags
 

@@ -26,12 +26,13 @@
 use alloc::{vec, vec::Vec};
 use core::fmt;
 
-#[cfg(feature = "getrandom")]
 use zeroize::Zeroize;
 use zeroize::Zeroizing;
 
+use crate::packing;
 pub use crate::params::DilithiumMode;
 use crate::params::*;
+use crate::polyvec::*;
 use crate::sign;
 use crate::symmetric::shake256;
 
@@ -69,6 +70,14 @@ impl std::error::Error for DilithiumError {}
 /// An ML-DSA key pair (private key + public key).
 ///
 /// The private key bytes are **automatically zeroized on drop** (FIPS 204 §7).
+///
+/// # Security warning — `serde`
+///
+/// With the `serde` feature, `Serialize` emits the **raw private key in
+/// plaintext**. Only serialize key pairs into encrypted or otherwise
+/// protected storage, and never into logs or debug output. Prefer
+/// [`public_key_bytes`](Self::public_key_bytes) when only the public half
+/// is needed.
 ///
 /// Type aliases: `MlDsaKeyPair` (FIPS 204 naming) = `DilithiumKeyPair` (legacy).
 #[derive(Debug, Clone)]
@@ -206,7 +215,10 @@ impl DilithiumKeyPair {
         }
 
         let mut sig = vec![0u8; self.mode.signature_bytes()];
-        sign::sign_signature(self.mode, &mut sig, msg, ctx, rnd, &self.privkey);
+        let ret = sign::sign_signature(self.mode, &mut sig, msg, ctx, rnd, &self.privkey);
+        if ret != 0 {
+            return Err(DilithiumError::BadArgument);
+        }
         Ok(DilithiumSignature { data: sig })
     }
 
@@ -268,8 +280,12 @@ impl DilithiumKeyPair {
     ///
     /// Validates that:
     /// 1. Key sizes match the expected values for the given mode.
-    /// 2. The public key embedded in the secret key is consistent.
+    /// 2. The public key embedded in the secret key is consistent (`rho`).
     /// 3. The secret key's `tr = H(pk)` field is consistent.
+    /// 4. **Full algebraic consistency**: `t = A·s1 + s2` recomputed from the
+    ///    secret key matches the public key's `t1` and the secret key's `t0`.
+    ///    This rejects tampered/corrupted secret keys, which could otherwise
+    ///    be used to mount fault-style key-recovery attacks via signing.
     pub fn from_keys(
         privkey: &[u8],
         pubkey: &[u8],
@@ -298,6 +314,58 @@ impl DilithiumKeyPair {
         let mut expected_tr = [0u8; TRBYTES];
         shake256(&mut expected_tr, pubkey);
         if sk_tr != &expected_tr[..] {
+            return Err(DilithiumError::InvalidKey);
+        }
+
+        // Full algebraic check: recompute t = A·s1 + s2 from the secret key
+        // (same computation as key generation) and verify that
+        // power2round(t) reproduces both pk's t1 and sk's t0.
+        let mut rho = [0u8; SEEDBYTES];
+        let mut tr = [0u8; TRBYTES];
+        let mut key = [0u8; SEEDBYTES];
+        let mut t0 = PolyVecK::default();
+        let mut s1 = PolyVecL::default();
+        let mut s2 = PolyVecK::default();
+        packing::unpack_sk(
+            mode, &mut rho, &mut tr, &mut key, &mut t0, &mut s1, &mut s2, privkey,
+        );
+
+        let mut mat = vec![PolyVecL::default(); K_MAX];
+        matrix_expand(mode, &mut mat, &rho);
+        polyvecl_ntt(mode, &mut s1);
+        let mut t = PolyVecK::default();
+        matrix_pointwise_montgomery(mode, &mut t, &mat, &s1);
+        polyveck_reduce(mode, &mut t);
+        polyveck_invntt_tomont(mode, &mut t);
+        polyveck_add_assign(mode, &mut t, &s2);
+        polyveck_caddq(mode, &mut t);
+
+        let mut t1 = PolyVecK::default();
+        let mut t0_expected = PolyVecK::default();
+        polyveck_power2round(mode, &mut t1, &mut t0_expected, &t);
+
+        // Repack the expected public key and compare (public data).
+        let mut pk_expected = vec![0u8; mode.public_key_bytes()];
+        packing::pack_pk(mode, &mut pk_expected, &rho, &t1);
+        let pk_ok = pk_expected == pubkey;
+
+        // Compare sk's t0 against the recomputed low part.
+        let mut t0_ok = true;
+        for i in 0..mode.k() {
+            if t0.vec[i].coeffs != t0_expected.vec[i].coeffs {
+                t0_ok = false;
+            }
+        }
+
+        // Zeroize secret material unpacked for validation.
+        key.zeroize();
+        s1.zeroize();
+        s2.zeroize();
+        t0.zeroize();
+        t0_expected.zeroize();
+        t.zeroize();
+
+        if !pk_ok || !t0_ok {
             return Err(DilithiumError::InvalidKey);
         }
 

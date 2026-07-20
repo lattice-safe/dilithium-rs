@@ -10,8 +10,15 @@
 #[cfg(target_arch = "aarch64")]
 use core::arch::aarch64::*;
 
+#[cfg(target_arch = "aarch64")]
 use crate::ntt::ZETAS;
-use crate::params::{N, Q, QINV};
+use crate::params::N;
+#[cfg(target_arch = "aarch64")]
+use crate::params::QINV;
+// `Q` is referenced from the aarch64 NEON kernels and the SIMD-vs-scalar tests
+// (which run on every arch).
+#[cfg(any(target_arch = "aarch64", test))]
+use crate::params::Q;
 
 /// Pure NEON Montgomery reduction of 4 products.
 ///

@@ -1,8 +1,8 @@
 [package]
 name = "dilithium-rs"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
-rust-version = "1.70"
+rust-version = "1.85"
 authors = ["lattice-safe contributors"]
 description = "Pure Rust implementation of ML-DSA (FIPS 204) / CRYSTALS-Dilithium post-quantum digital signature scheme"
 license = "MIT"
@@ -47,6 +47,7 @@ path = "tests/coverage.rs"
 [dev-dependencies]
 rand = "0.8"
 sha3 = "0.10"
+serde_json = "1"
 criterion = { version = "0.5", features = ["html_reports"] }
 
 [[bench]]

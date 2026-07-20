@@ -159,6 +159,16 @@ fn test_key_validation_wrong_size() {
 }
 
 #[test]
+fn test_key_validation_wrong_pubkey_size() {
+    // Correct-length secret key but wrong-length public key: this must reach
+    // the public-key size check (not short-circuit on the secret key).
+    let kp = DilithiumKeyPair::generate(DilithiumMode::Dilithium2).expect("keygen failed");
+    let result =
+        DilithiumKeyPair::from_keys(kp.private_key(), &[0u8; 100], DilithiumMode::Dilithium2);
+    assert_eq!(result.unwrap_err(), dilithium::DilithiumError::FormatError);
+}
+
+#[test]
 fn test_key_validation_rho_mismatch() {
     let kp = DilithiumKeyPair::generate(DilithiumMode::Dilithium2).expect("keygen failed");
     let mut bad_pk = kp.public_key().to_vec();
@@ -175,6 +185,70 @@ fn test_key_validation_tr_mismatch() {
     bad_sk[64] ^= 0xFF;
     let result = DilithiumKeyPair::from_keys(&bad_sk, kp.public_key(), DilithiumMode::Dilithium2);
     assert_eq!(result.unwrap_err(), dilithium::DilithiumError::InvalidKey);
+}
+
+#[test]
+fn test_key_validation_tampered_s1_rejected() {
+    // F4: a secret key whose rho and tr are intact but whose s1/s2/t0
+    // has been tampered with must be rejected (fault-attack hardening).
+    let kp = DilithiumKeyPair::generate(DilithiumMode::Dilithium2).expect("keygen failed");
+    let mut bad_sk = kp.private_key().to_vec();
+    // s1 starts after rho (32) + key (32) + tr (64) = offset 128
+    bad_sk[128] ^= 0x01;
+    let result = DilithiumKeyPair::from_keys(&bad_sk, kp.public_key(), DilithiumMode::Dilithium2);
+    assert_eq!(result.unwrap_err(), dilithium::DilithiumError::InvalidKey);
+}
+
+#[test]
+fn test_key_validation_tampered_t0_rejected() {
+    let mode = DilithiumMode::Dilithium2;
+    let kp = DilithiumKeyPair::generate(mode).expect("keygen failed");
+    let mut bad_sk = kp.private_key().to_vec();
+    // t0 occupies the tail of the secret key — flip a bit in the last byte
+    let last = bad_sk.len() - 1;
+    bad_sk[last] ^= 0x01;
+    let result = DilithiumKeyPair::from_keys(&bad_sk, kp.public_key(), mode);
+    assert_eq!(result.unwrap_err(), dilithium::DilithiumError::InvalidKey);
+}
+
+// ================================================================
+// Low-level API robustness (F5): wrong-length inputs must not panic
+// ================================================================
+
+#[test]
+fn test_lowlevel_verify_short_pk_returns_false() {
+    let mode = DilithiumMode::Dilithium2;
+    let kp = DilithiumKeyPair::generate(mode).expect("keygen failed");
+    let sig = kp.sign(b"msg", b"").expect("sign failed");
+    // Truncated public key: must return false, not panic
+    let short_pk = &kp.public_key()[..10];
+    assert!(!dilithium::sign::verify(
+        mode,
+        sig.as_bytes(),
+        b"msg",
+        b"",
+        short_pk
+    ));
+}
+
+#[test]
+fn test_lowlevel_sign_short_sk_returns_error() {
+    let mode = DilithiumMode::Dilithium2;
+    let rnd = [0u8; 32];
+    let mut sig = vec![0u8; mode.signature_bytes()];
+    // Truncated secret key: must return -1, not panic
+    let ret = dilithium::sign::sign_signature(mode, &mut sig, b"msg", b"", &rnd, &[0u8; 10]);
+    assert_eq!(ret, -1);
+}
+
+#[test]
+fn test_lowlevel_sign_hash_short_sk_returns_error() {
+    let mode = DilithiumMode::Dilithium2;
+    let rnd = [0u8; 32];
+    let mut sig = vec![0u8; mode.signature_bytes()];
+    // Valid ctx but truncated secret key: HashML-DSA path must return -1, not panic.
+    let ret = dilithium::sign::sign_hash(mode, &mut sig, b"msg", b"", &rnd, &[0u8; 10]);
+    assert_eq!(ret, -1);
 }
 
 // ================================================================

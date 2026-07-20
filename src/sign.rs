@@ -35,7 +35,7 @@ pub fn keypair(mode: DilithiumMode, random_seed: &[u8; SEEDBYTES]) -> (Vec<u8>, 
     let mut rhoprime: [u8; CRHBYTES] = expanded[SEEDBYTES..SEEDBYTES + CRHBYTES]
         .try_into()
         .unwrap();
-    let key: [u8; SEEDBYTES] = expanded[SEEDBYTES + CRHBYTES..].try_into().unwrap();
+    let mut key: [u8; SEEDBYTES] = expanded[SEEDBYTES + CRHBYTES..].try_into().unwrap();
     expanded.zeroize(); // S1: zeroize keying material
 
     // Expand matrix A
@@ -57,9 +57,8 @@ pub fn keypair(mode: DilithiumMode, random_seed: &[u8; SEEDBYTES]) -> (Vec<u8>, 
     polyveck_reduce(mode, &mut t1);
     polyveck_invntt_tomont(mode, &mut t1);
 
-    // t = t + s2
-    let t1_copy = t1.clone();
-    polyveck_add(mode, &mut t1, &t1_copy, &s2);
+    // t = t + s2 (in place, no secret temporary)
+    polyveck_add_assign(mode, &mut t1, &s2);
 
     // Extract t1 and t0
     polyveck_caddq(mode, &mut t1);
@@ -79,10 +78,21 @@ pub fn keypair(mode: DilithiumMode, random_seed: &[u8; SEEDBYTES]) -> (Vec<u8>, 
     let mut sk = vec![0u8; mode.secret_key_bytes()];
     packing::pack_sk(mode, &mut sk, &rho, &tr, &key, &t0, &s1, &s2);
 
+    // S1: zeroize all secret material left in local variables.
+    // (rho, tr, t1_high are public; mat is derived from public rho.)
+    key.zeroize();
+    s1.zeroize();
+    s1hat.zeroize();
+    s2.zeroize();
+    t0.zeroize();
+    t1.zeroize(); // full t = A*s1 + s2 contains the secret low part t0
+
     (pk, sk)
 }
 
 /// Internal signing function with rejection sampling loop.
+///
+/// Returns the signature length, or 0 if `sk`/`sig` have wrong lengths.
 pub fn sign_signature_internal(
     mode: DilithiumMode,
     sig: &mut [u8],
@@ -91,6 +101,11 @@ pub fn sign_signature_internal(
     rnd: &[u8; RNDBYTES],
     sk: &[u8],
 ) -> usize {
+    // F5: defensive length checks — never panic on malformed input
+    if sk.len() != mode.secret_key_bytes() || sig.len() < mode.signature_bytes() {
+        return 0;
+    }
+
     let k = mode.k();
     let l = mode.l();
     let beta = mode.beta();
@@ -128,25 +143,35 @@ pub fn sign_signature_internal(
     let mut nonce: u16 = 0;
     let mut h = PolyVecK::default();
 
-    loop {
+    // Secret-bearing temporaries are hoisted out of the rejection loop so
+    // they live in a single stack slot (overwritten each iteration) and can
+    // be zeroized once on exit (S2/F3).
+    let mut y = PolyVecL::default();
+    let mut y_ntt = PolyVecL::default();
+    let mut z = PolyVecL::default();
+    let mut w = PolyVecK::default();
+    let mut w0 = PolyVecK::default();
+    let mut cp = Poly::zero();
+
+    let siglen = loop {
         // Sample intermediate vector y
-        let mut y = PolyVecL::default();
         polyvecl_uniform_gamma1(mode, &mut y, &rhoprime, nonce);
-        nonce += l as u16;
+        // Matches the C reference. Overflow is unreachable in practice
+        // (~9,300 consecutive rejections, p ≈ (3/4)^9300); wrapping_add
+        // ensures debug builds cannot panic either.
+        nonce = nonce.wrapping_add(l as u16);
 
         // w = A * NTT(y)
-        let mut z_ntt = y.clone();
-        polyvecl_ntt(mode, &mut z_ntt);
-        let mut w1 = PolyVecK::default();
-        matrix_pointwise_montgomery(mode, &mut w1, &mat, &z_ntt);
-        polyveck_reduce(mode, &mut w1);
-        polyveck_invntt_tomont(mode, &mut w1);
+        y_ntt.clone_from(&y);
+        polyvecl_ntt(mode, &mut y_ntt);
+        matrix_pointwise_montgomery(mode, &mut w, &mat, &y_ntt);
+        polyveck_reduce(mode, &mut w);
+        polyveck_invntt_tomont(mode, &mut w);
 
         // Decompose w
-        polyveck_caddq(mode, &mut w1);
+        polyveck_caddq(mode, &mut w);
         let mut w1_high = PolyVecK::default();
-        let mut w0 = PolyVecK::default();
-        polyveck_decompose(mode, &mut w1_high, &mut w0, &w1);
+        polyveck_decompose(mode, &mut w1_high, &mut w0, &w);
         let mut w1_packed = vec![0u8; k * mode.polyw1_packedbytes()];
         polyveck_pack_w1(mode, &mut w1_packed, &w1_high);
 
@@ -154,19 +179,14 @@ pub fn sign_signature_internal(
         let ctilde = mode.ctildebytes();
         let mut ctilde_buf = vec![0u8; ctilde];
         shake256_multi(&mut ctilde_buf, &[&mu, &w1_packed]);
-        // Store c̃ into the signature buffer
-        sig[..ctilde].copy_from_slice(&ctilde_buf);
 
-        let mut cp = Poly::zero();
         Poly::challenge(mode, &mut cp, &ctilde_buf);
         cp.ntt();
 
         // z = y + c*s1
-        let mut z = PolyVecL::default();
         polyvecl_pointwise_poly_montgomery(mode, &mut z, &cp, &s1);
         polyvecl_invntt_tomont(mode, &mut z);
-        let z_copy = z.clone();
-        polyvecl_add(mode, &mut z, &z_copy, &y);
+        polyvecl_add_assign(mode, &mut z, &y);
         polyvecl_reduce(mode, &mut z);
         if polyvecl_chknorm(mode, &z, gamma1 - beta) {
             continue;
@@ -175,8 +195,7 @@ pub fn sign_signature_internal(
         // w0 = w0 - c*s2
         polyveck_pointwise_poly_montgomery(mode, &mut h, &cp, &s2);
         polyveck_invntt_tomont(mode, &mut h);
-        let w0_copy = w0.clone();
-        polyveck_sub(mode, &mut w0, &w0_copy, &h);
+        polyveck_sub_assign(mode, &mut w0, &h);
         polyveck_reduce(mode, &mut w0);
         if polyveck_chknorm(mode, &w0, gamma2 - beta) {
             continue;
@@ -190,22 +209,37 @@ pub fn sign_signature_internal(
             continue;
         }
 
-        let w0_copy2 = w0.clone();
-        polyveck_add(mode, &mut w0, &w0_copy2, &h);
+        polyveck_add_assign(mode, &mut w0, &h);
         let n = polyveck_make_hint(mode, &mut h, &w0, &w1_high);
         if n > omega {
             continue;
         }
 
-        // Pack signature
+        // Pack signature. c̃ is written to the caller's buffer only after
+        // all rejection checks pass (F6): no rejected-iteration state
+        // escapes into `sig`.
         packing::pack_sig(mode, sig, &ctilde_buf, &z, &h);
-        return mode.signature_bytes();
-    }
+        break mode.signature_bytes();
+    };
+
+    // S2/F3: zeroize secret material before returning.
+    // (z, cp, h are public — they are part of / derivable from the
+    // signature. mu, tr, rho, mat are public. key was zeroized above.)
+    s1.zeroize();
+    s2.zeroize();
+    t0.zeroize();
+    rhoprime.zeroize();
+    y.zeroize();
+    y_ntt.zeroize();
+    w.zeroize();
+    w0.zeroize();
+
+    siglen
 }
 
 /// Sign a message with context string.
 ///
-/// Returns signature length on success, or 0 on error (context too long).
+/// Returns 0 on success, or -1 on error (context too long, bad sk/sig length).
 pub fn sign_signature(
     mode: DilithiumMode,
     sig: &mut [u8],
@@ -224,7 +258,9 @@ pub fn sign_signature(
     pre[1] = ctx.len() as u8;
     pre[2..].copy_from_slice(ctx);
 
-    sign_signature_internal(mode, sig, m, &pre, rnd, sk);
+    if sign_signature_internal(mode, sig, m, &pre, rnd, sk) == 0 {
+        return -1;
+    }
     0
 }
 
@@ -237,6 +273,10 @@ pub fn verify_internal(mode: DilithiumMode, sig: &[u8], m: &[u8], pre: &[u8], pk
     let ctilde_len = mode.ctildebytes();
 
     if sig.len() != mode.signature_bytes() {
+        return false;
+    }
+    // F5: defensive length check — never panic on malformed input
+    if pk.len() != mode.public_key_bytes() {
         return false;
     }
 
@@ -345,7 +385,9 @@ pub fn sign_hash(
     off += oid.len();
     pre[off..off + ph_m.len()].copy_from_slice(&ph_m);
 
-    sign_signature_internal(mode, sig, &[], &pre, rnd, sk);
+    if sign_signature_internal(mode, sig, &[], &pre, rnd, sk) == 0 {
+        return -1;
+    }
     0
 }
 

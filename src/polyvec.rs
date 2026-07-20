@@ -35,6 +35,22 @@ impl Default for PolyVecK {
     }
 }
 
+impl zeroize::Zeroize for PolyVecL {
+    fn zeroize(&mut self) {
+        for p in &mut self.vec {
+            zeroize::Zeroize::zeroize(p);
+        }
+    }
+}
+
+impl zeroize::Zeroize for PolyVecK {
+    fn zeroize(&mut self) {
+        for p in &mut self.vec {
+            zeroize::Zeroize::zeroize(p);
+        }
+    }
+}
+
 // ================================================================
 // Matrix expansion
 // ================================================================
@@ -104,6 +120,13 @@ pub fn polyvecl_reduce(mode: DilithiumMode, v: &mut PolyVecL) {
 pub fn polyvecl_add(mode: DilithiumMode, w: &mut PolyVecL, u: &PolyVecL, v: &PolyVecL) {
     for i in 0..mode.l() {
         Poly::add(&mut w.vec[i], &u.vec[i], &v.vec[i]);
+    }
+}
+
+/// In-place vector addition: w += v (no temporary secret copies).
+pub fn polyvecl_add_assign(mode: DilithiumMode, w: &mut PolyVecL, v: &PolyVecL) {
+    for i in 0..mode.l() {
+        Poly::add_assign(&mut w.vec[i], &v.vec[i]);
     }
 }
 
@@ -200,10 +223,24 @@ pub fn polyveck_add(mode: DilithiumMode, w: &mut PolyVecK, u: &PolyVecK, v: &Pol
     }
 }
 
+/// In-place vector addition: w += v (no temporary secret copies).
+pub fn polyveck_add_assign(mode: DilithiumMode, w: &mut PolyVecK, v: &PolyVecK) {
+    for i in 0..mode.k() {
+        Poly::add_assign(&mut w.vec[i], &v.vec[i]);
+    }
+}
+
 /// Subtract vectors: w = u - v.
 pub fn polyveck_sub(mode: DilithiumMode, w: &mut PolyVecK, u: &PolyVecK, v: &PolyVecK) {
     for i in 0..mode.k() {
         Poly::sub(&mut w.vec[i], &u.vec[i], &v.vec[i]);
+    }
+}
+
+/// In-place vector subtraction: w -= v (no temporary secret copies).
+pub fn polyveck_sub_assign(mode: DilithiumMode, w: &mut PolyVecK, v: &PolyVecK) {
+    for i in 0..mode.k() {
+        Poly::sub_assign(&mut w.vec[i], &v.vec[i]);
     }
 }
 

@@ -22,10 +22,17 @@
 use core::arch::x86_64::*;
 
 #[cfg(target_arch = "x86_64")]
-use crate::params::QINV;
-use crate::params::{N, Q};
+use crate::ntt::ZETAS;
+use crate::params::N;
+// `Q` is only referenced from the x86_64 AVX2 kernels below, and from the
+// SIMD-vs-scalar tests (which run on every arch).
+#[cfg(any(target_arch = "x86_64", test))]
+use crate::params::Q;
 
-/// Signed QINV for Montgomery: we need the value such that Q * QINV ≡ 1 (mod 2^32).
+/// Signed QINV for Montgomery: the value such that Q * QINV ≡ 1 (mod 2^32),
+/// reinterpreted as i32 (wrapping). `params::QINV` (58728449) fits in i32.
+#[cfg(target_arch = "x86_64")]
+const QINV32: i32 = crate::params::QINV as i32;
 
 /// Pure AVX2 Montgomery reduction of 8 products.
 ///
@@ -196,8 +203,10 @@ pub unsafe fn invntt_avx2(a: &mut [i32; N]) {
 
 /// Runtime-detected NTT dispatch.
 /// Uses AVX2 if available on x86_64, otherwise falls back to scalar.
+/// With `no_std`, runtime detection is unavailable; AVX2 is used only if
+/// enabled at compile time (e.g. `-C target-feature=+avx2`).
 pub fn ntt_simd(a: &mut [i32; N]) {
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", feature = "std"))]
     {
         if is_x86_feature_detected!("avx2") {
             unsafe {
@@ -206,12 +215,20 @@ pub fn ntt_simd(a: &mut [i32; N]) {
             return;
         }
     }
+    #[cfg(all(target_arch = "x86_64", not(feature = "std"), target_feature = "avx2"))]
+    {
+        unsafe {
+            ntt_avx2(a);
+        }
+        return;
+    }
+    #[allow(unreachable_code)]
     crate::ntt::ntt(a);
 }
 
 /// Runtime-detected inverse NTT dispatch.
 pub fn invntt_simd(a: &mut [i32; N]) {
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", feature = "std"))]
     {
         if is_x86_feature_detected!("avx2") {
             unsafe {
@@ -220,6 +237,14 @@ pub fn invntt_simd(a: &mut [i32; N]) {
             return;
         }
     }
+    #[cfg(all(target_arch = "x86_64", not(feature = "std"), target_feature = "avx2"))]
+    {
+        unsafe {
+            invntt_avx2(a);
+        }
+        return;
+    }
+    #[allow(unreachable_code)]
     crate::ntt::invntt_tomont(a);
 }
 

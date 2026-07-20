@@ -1,0 +1,11 @@
+# Keep the Docker build context small and reproducible.
+target/
+fuzz/target/
+.git/
+.github/
+docs/
+*.profraw
+*.profdata
+tarpaulin-report.html
+lcov.info
+.DS_Store

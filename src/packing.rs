@@ -160,6 +160,11 @@ pub fn unpack_sig(
     h: &mut PolyVecK,
     sig: &[u8],
 ) -> bool {
+    // Defensive length checks — treat wrong sizes as malformed, never panic
+    if sig.len() != mode.signature_bytes() || c.len() < mode.ctildebytes() {
+        return true;
+    }
+
     let ctilde = mode.ctildebytes();
     let polyz_packed = mode.polyz_packedbytes();
     let omega = mode.omega();

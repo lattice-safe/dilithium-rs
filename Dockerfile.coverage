@@ -1,0 +1,20 @@
+# syntax=docker/dockerfile:1
+
+# Code-coverage image for dilithium-rs using cargo-tarpaulin.
+#
+# Uses a glibc (Debian) base rather than Alpine/musl — tarpaulin's coverage
+# instrumentation is much more reliable on glibc.
+#
+#   docker build -f Dockerfile.coverage -t dilithium-rs-coverage .
+#   docker run --rm dilithium-rs-coverage
+#
+# Mirrors the CI job: cargo tarpaulin --features serde --fail-under 90
+
+FROM rust:1-bookworm AS coverage
+
+RUN cargo install cargo-tarpaulin
+
+WORKDIR /app
+COPY . .
+
+CMD ["cargo", "tarpaulin", "--features", "serde", "--fail-under", "90", "--out", "Stdout"]

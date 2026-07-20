@@ -66,7 +66,7 @@ fn bench_verify(c: &mut Criterion) {
 
         group.bench_function(name, |b| {
             b.iter(|| {
-                sign::verify(
+                let _ = sign::verify(
                     black_box(mode),
                     black_box(&sig),
                     black_box(&msg),

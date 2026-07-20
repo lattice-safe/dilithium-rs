@@ -5,7 +5,6 @@
 
 use alloc::vec;
 
-use crate::ntt;
 use crate::params::*;
 use crate::reduce::{caddq, montgomery_reduce, reduce32};
 use crate::rounding;
@@ -24,6 +23,12 @@ pub struct Poly {
 impl Default for Poly {
     fn default() -> Self {
         Self { coeffs: [0i32; N] }
+    }
+}
+
+impl zeroize::Zeroize for Poly {
+    fn zeroize(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.coeffs);
     }
 }
 
@@ -59,10 +64,27 @@ impl Poly {
         }
     }
 
+    /// In-place addition: r += b. No modular reduction.
+    ///
+    /// Avoids the temporary clone required by [`Poly::add`], which matters
+    /// when the operands hold secret data (no stray copies to zeroize).
+    pub fn add_assign(r: &mut Poly, b: &Poly) {
+        for i in 0..N {
+            r.coeffs[i] += b.coeffs[i];
+        }
+    }
+
     /// Subtract polynomials: c = a - b. No modular reduction.
     pub fn sub(c: &mut Poly, a: &Poly, b: &Poly) {
         for i in 0..N {
             c.coeffs[i] = a.coeffs[i] - b.coeffs[i];
+        }
+    }
+
+    /// In-place subtraction: r -= b. No modular reduction.
+    pub fn sub_assign(r: &mut Poly, b: &Poly) {
+        for i in 0..N {
+            r.coeffs[i] -= b.coeffs[i];
         }
     }
 
@@ -74,13 +96,43 @@ impl Poly {
     }
 
     /// In-place forward NTT.
+    ///
+    /// With the `simd` feature, dispatches to AVX2 (x86_64) or NEON
+    /// (aarch64) accelerated implementations; otherwise scalar.
     pub fn ntt(&mut self) {
-        ntt::ntt(&mut self.coeffs);
+        #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+        {
+            crate::ntt_avx2::ntt_simd(&mut self.coeffs);
+        }
+        #[cfg(all(feature = "simd", target_arch = "aarch64"))]
+        {
+            crate::ntt_neon::ntt_simd(&mut self.coeffs);
+        }
+        #[cfg(not(all(
+            feature = "simd",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )))]
+        crate::ntt::ntt(&mut self.coeffs);
     }
 
     /// In-place inverse NTT with Montgomery factor.
+    ///
+    /// With the `simd` feature, dispatches to AVX2 (x86_64) or NEON
+    /// (aarch64) accelerated implementations; otherwise scalar.
     pub fn invntt_tomont(&mut self) {
-        ntt::invntt_tomont(&mut self.coeffs);
+        #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+        {
+            crate::ntt_avx2::invntt_simd(&mut self.coeffs);
+        }
+        #[cfg(all(feature = "simd", target_arch = "aarch64"))]
+        {
+            crate::ntt_neon::invntt_simd(&mut self.coeffs);
+        }
+        #[cfg(not(all(
+            feature = "simd",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )))]
+        crate::ntt::invntt_tomont(&mut self.coeffs);
     }
 
     /// Pointwise multiplication in NTT domain with Montgomery reduction.

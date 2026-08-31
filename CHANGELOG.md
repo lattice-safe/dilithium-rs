@@ -7,6 +7,113 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-31
+
+Second audit round (algebraic, side-channel, memory-safety, coverage) — see
+`SECURITY_AUDIT.md` § "Round 2". One specification violation and eight
+hardening findings; 100% region/line/function coverage.
+
+### Security
+- **R2-1 (High)**: **HashML-DSA now embeds the correct OID.** FIPS 204
+  Algorithm 4/5 put the *pre-hash function's* DER OID into `M'`
+  (`2.16.840.1.101.3.4.2.3` for SHA-512, the same for all parameter sets).
+  The crate embedded the per-mode `id-ml-dsa-*` signature-algorithm OIDs, with
+  a malformed DER length byte. `sign_prehash`/`verify_prehash` were therefore
+  self-consistent but not interoperable with any conforming implementation.
+  Pure ML-DSA was unaffected
+- **R2-2**: `Debug` on `DilithiumKeyPair` no longer prints the private key —
+  the derived impl leaked it through `Zeroizing`'s pass-through `Debug`;
+  it now renders `[REDACTED]`
+- **R2-3**: The SHAKE output buffers that hold `s1`/`s2` (keygen) and the mask
+  `y` (every signing iteration) are zeroized instead of being dropped intact
+- **R2-4**: `serde` `Deserialize` now runs the full FIPS 204 §7.1 key
+  validation (via `TryFrom` → `from_keys`) instead of bypassing every
+  constructor check
+- **R2-5**: `Poly::chknorm` and the polyvec wrappers scan every coefficient
+  and every polynomial without early exit, so the position of the first
+  out-of-bound coefficient in a rejected candidate no longer leaks (the C
+  reference short-circuits here)
+- **R2-6**: `rounding::make_hint` is branchless — the previous `||`/`&&`
+  short-circuit distinguished `a0 > γ₂` from `a0 < −γ₂`, i.e. the sign of a
+  secret `w0` coefficient. Output is bit-identical (KATs unchanged)
+- **R2-7**: `polyvecl_pointwise_acc_montgomery` accumulates in place instead
+  of cloning the secret partial sum on every one of the K·L products, and
+  `polyeta_pack`/`polyt0_pack` zeroize their temporaries
+- **R2-8**: `from_keys` compares the secret `t0` with a masked, constant-time
+  comparison
+- **R2-9**: `to_bytes()` returns `Zeroizing<Vec<u8>>` so the exported
+  plaintext secret key is wiped on drop
+- **R2-11**: `nonce + i` in the polyvec samplers uses `wrapping_add`,
+  matching the already-hardened outer nonce
+
+### Added
+- `DilithiumKeyPair::generate_with_rng`, `sign_with_rng`,
+  `sign_prehash_with_rng` — hedged key generation and signing from a
+  caller-supplied entropy source (`&mut dyn FnMut(&mut [u8]) -> Result<(), ()>`).
+  Available without the `std`/`getrandom` feature, so `no_std` targets can do
+  hedged signing. A failing source yields `RandomError` and produces no key or
+  signature
+- `params::SHA512_OID` (the OID that goes into `M'`) and correct, separately
+  named certificate identifiers: `ML_DSA_{44,65,87}_OID` (`id-ml-dsa-*`,
+  sigAlgs 17–19) and `HASH_ML_DSA_{44,65,87}_OID`
+  (`id-hash-ml-dsa-*-with-sha512`, sigAlgs 32–34), plus
+  `DilithiumMode::{algorithm_oid, hash_algorithm_oid, prehash_oid}`
+- `sign::pure_prefix` / `sign::prehash_prefix` — the `M'` constructions as
+  single shared functions instead of four duplicated call sites
+- In-place kernels `Poly::{pointwise_montgomery_assign, use_hint_assign}` and
+  `polyveck_{pointwise_poly_montgomery_assign, use_hint_assign}`;
+  verification no longer clones three whole polynomial vectors
+- `symmetric::XofStream` — lets the rejection-sampling refill paths be driven
+  by a test stream
+- `tests/acvp_kat.rs` (5 tests) with `tests/data/acvp_ml_dsa.json`: **official
+  NIST ACVP vectors** — 75 `keyGen`, 12 pure `sigGen` (deterministic, context
+  0–245 bytes), SHA-512 HashML-DSA `sigGen` (deterministic byte-for-byte) and
+  verification of NIST's hedged pre-hash signatures, and 19 `sigVer` cases
+  including all four of NIST's negative classes (modified message,
+  commitment, hint, `z`). This is the external confirmation that R2-1 is
+  fixed: with the pre-0.4.0 OID the deterministic pre-hash test fails
+- `tests/hash_ml_dsa_conformance.rs` (6 tests): `M'` bytes pinned against an
+  independent transcription of FIPS 204 Algorithm 4/5, plus pure/pre-hash
+  domain separation
+- `tests/rejection_paths.rs` (3 tests): reaches the `‖c·t0‖∞ ≥ γ₂` rejection
+  branch (p ≈ 2⁻²³ per iteration with real keys) and asserts the signing loop
+  still terminates
+- `fuzz_verify` fuzz target: adversarial signature bytes and single-bit
+  mutations of genuine signatures against a real public key, all three modes,
+  both domains
+- Compile-time assertion that the L-fold Montgomery accumulator stays inside
+  `reduce32`'s input bound
+
+### Changed
+- Benchmarks re-measured on an idle machine with a matched C harness, and the
+  signing benchmark now **varies the message per iteration**. With a fixed
+  `(sk, msg, rnd)` the rejection loop is deterministic, so the old figures
+  reported one arbitrary rejection count — which is why ML-DSA-65 signing
+  previously appeared 1.5× slower than the C reference. Verification also got
+  faster in this release (three whole `PolyVecK` clones removed)
+- **CI now executes the SIMD kernels** (`cargo test --release --features simd`
+  and `--all-features`). The AVX2/NEON NTT is the crate's only `unsafe` code
+  and was previously compiled but never run by any test job (R2-10)
+- Coverage gate moved from `cargo tarpaulin --fail-under 90` to
+  `cargo llvm-cov --all-features` at **100%** regions, lines and functions
+  (`Dockerfile.coverage` updated to match)
+- The `|ctx| ≤ 255` limit is enforced in one place (`sign::sign_signature` /
+  `sign::sign_hash`) rather than duplicated in the safe wrappers; the
+  resulting error is unchanged (`DilithiumError::BadArgument`)
+- `DilithiumMode::hash_oid()` removed — it returned the wrong value for its
+  only use. Use `prehash_oid()` for the `M'` OID, or `algorithm_oid()` /
+  `hash_algorithm_oid()` for certificate identifiers
+
+### Breaking
+- HashML-DSA signature format changed (R2-1). `sign_prehash` output from
+  v0.3.0 and earlier will not verify. Pure ML-DSA signatures, public keys and
+  secret keys are unchanged
+- `to_bytes()` returns `Zeroizing<Vec<u8>>` instead of `Vec<u8>` (derefs to
+  `Vec<u8>`/`[u8]`, so most call sites are unaffected)
+- `serde` `Deserialize` for `DilithiumKeyPair` now rejects invalid key pairs
+  instead of accepting them
+- `DilithiumMode::hash_oid()` renamed/replaced (see Changed)
+
 ## [0.3.0] - 2026-07-20
 
 ### Security

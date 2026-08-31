@@ -35,3 +35,8 @@ doc = false
 name = "fuzz_from_bytes"
 path = "fuzz_targets/fuzz_from_bytes.rs"
 doc = false
+
+[[bin]]
+name = "fuzz_verify"
+path = "fuzz_targets/fuzz_verify.rs"
+doc = false

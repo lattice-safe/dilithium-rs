@@ -4,8 +4,8 @@ use dilithium::params::*;
 use dilithium::packing;
 use dilithium::polyvec::{PolyVecK, PolyVecL};
 
-/// Fuzz unpack_sig with arbitrary bytes across all three modes —
-/// must never panic (including wrong-length input).
+// Fuzz unpack_sig with arbitrary bytes across all three modes —
+// must never panic (including wrong-length input).
 fuzz_target!(|data: &[u8]| {
     if data.is_empty() {
         return;

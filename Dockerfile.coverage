@@ -1,20 +1,26 @@
 # syntax=docker/dockerfile:1
 
-# Code-coverage image for dilithium-rs using cargo-tarpaulin.
+# Code-coverage image for dilithium-rs using cargo-llvm-cov.
 #
-# Uses a glibc (Debian) base rather than Alpine/musl — tarpaulin's coverage
-# instrumentation is much more reliable on glibc.
+# Uses a glibc (Debian) base and LLVM source-based coverage, which counts
+# regions (branch arms) rather than only lines — the difference matters here,
+# because several security-relevant branches (rejection paths, RNG failure,
+# malformed-input guards) are single-line early returns.
 #
 #   docker build -f Dockerfile.coverage -t dilithium-rs-coverage .
 #   docker run --rm dilithium-rs-coverage
 #
-# Mirrors the CI job: cargo tarpaulin --features serde --fail-under 90
+# Mirrors the CI job: 100% region/line/function coverage is enforced.
 
 FROM rust:1-bookworm AS coverage
 
-RUN cargo install cargo-tarpaulin
+RUN rustup component add llvm-tools-preview \
+    && cargo install cargo-llvm-cov --locked
 
 WORKDIR /app
 COPY . .
 
-CMD ["cargo", "tarpaulin", "--features", "serde", "--fail-under", "90", "--out", "Stdout"]
+CMD ["cargo", "llvm-cov", "--all-features", \
+     "--fail-under-lines", "100", \
+     "--fail-under-regions", "100", \
+     "--fail-under-functions", "100"]

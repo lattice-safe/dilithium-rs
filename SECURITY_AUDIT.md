@@ -1,4 +1,380 @@
-# Security Audit — dilithium-rs v0.2.0
+# Security Audit — dilithium-rs
+
+This file accumulates the audit rounds performed on this crate. The most
+recent round is first.
+
+- [Round 2 — v0.4.0 (2026-08-31)](#round-2--v040-2026-08-31): algebraic,
+  side-channel, memory-safety and coverage audit. One HIGH finding
+  (HashML-DSA OID) plus seven hardening fixes.
+- [Round 1 — v0.2.0 (2026-07-20)](#round-1--v020-2026-07-20): initial audit,
+  eleven findings, all fixed in v0.3.0.
+
+---
+
+# Round 2 — v0.4.0 (2026-08-31)
+
+**Scope:** Full source review of `src/` plus tests, fuzz targets, CI and
+supply-chain config, along four independent axes: (1) algebraic correctness
+against FIPS 204 and the CRYSTALS-Dilithium C reference, (2) constant-time /
+side-channel behaviour, (3) memory safety, `unsafe` soundness and public-API
+robustness against adversarial input, (4) test-coverage completeness.
+
+**Method:** Manual review plus *computational* verification — constants and
+tables recomputed from first principles, the rounding functions checked
+**exhaustively over all 8,380,417 field elements**, the NTT checked against
+schoolbook negacyclic convolution, the SIMD lane algebra modelled bit-exactly,
+and the whole feature/target matrix built and adversarially exercised. All
+dynamic checks in this round were actually executed (unlike Round 1).
+
+## Summary
+
+The core ML-DSA arithmetic is a faithful, correct port: every constant, twiddle
+table entry, rounding function, sampler, norm check and packing rule was
+verified independently, and the 100-vector-per-mode KAT suite matches the C
+reference bit-for-bit (also with the `simd` feature enabled, which validates
+the NEON kernels end to end).
+
+**One specification violation was found and fixed:** HashML-DSA embedded the
+wrong object identifier in the pre-hash message representative `M'` — the
+per-parameter-set signature-algorithm OID instead of the pre-hash function's
+OID — and the bytes were not even well-formed DER. Pure ML-DSA was unaffected.
+
+The remaining findings are hardening: secret residue left in un-zeroized
+sampling buffers, two reference-inherited short-circuits over secret values,
+a `Debug` impl that printed the private key, and a `serde` path that bypassed
+key validation.
+
+| # | Severity | Finding | Status |
+|---|----------|---------|--------|
+| R2-1 | **High** (spec / interop) | HashML-DSA `M'` embeds the wrong OID (`id-ml-dsa-*` instead of the SHA-512 OID), with a malformed DER length byte | ✅ Fixed |
+| R2-2 | Medium | `Debug` on `DilithiumKeyPair` printed the plaintext private key | ✅ Fixed |
+| R2-3 | Medium | Secret SHAKE output buffers (`s1`/`s2` in keygen, the mask `y` on every signing iteration) were dropped without zeroization | ✅ Fixed |
+| R2-4 | Medium | `serde` `Deserialize` bypassed all constructor validation | ✅ Fixed |
+| R2-5 | Low | `chknorm` early-returned on the first out-of-bound coefficient (leaks its position for rejected candidates) | ✅ Fixed (branchless) |
+| R2-6 | Low | `make_hint` short-circuited over the secret `w0` (leaks the sign of a secret coefficient) | ✅ Fixed (branchless) |
+| R2-7 | Low | Secret partial sums copied by `w.clone()` in the pointwise accumulator, and pack temporaries left un-zeroized | ✅ Fixed |
+| R2-8 | Low | `from_keys` compared the secret `t0` with a variable-time `!=` | ✅ Fixed (masked) |
+| R2-9 | Low | `to_bytes()` returned the plaintext secret key in a non-zeroizing `Vec` | ✅ Fixed |
+| R2-10 | Medium (assurance) | CI never *executed* the `simd` kernels — the crate's only `unsafe` code had zero executed test coverage | ✅ Fixed |
+| R2-11 | Info | `nonce + i` in the polyvec samplers was non-wrapping (debug-build panic path, unreachable in practice) | ✅ Fixed |
+
+Verified as **not** vulnerable (see "Checked and found correct"): no memory
+unsafety, no reachable panic on attacker-controlled bytes across 34
+adversarial cases and the whole feature matrix, no secret-indexed table
+lookup, no unsound `unsafe`.
+
+## Findings
+
+### R2-1 — HashML-DSA embeds the wrong OID (High)
+
+`src/params.rs`, consumed by `sign_hash` / `verify_hash`.
+
+FIPS 204 §5.4 (Algorithms 4 and 5, line 21) builds the pre-hash message
+representative as
+
+```text
+M' = IntegerToBytes(1, 1) || IntegerToBytes(|ctx|, 1) || ctx || OID || PH_M
+```
+
+where `OID` is the DER encoding of the **pre-hash function's** object
+identifier. For SHA-512 that is `2.16.840.1.101.3.4.2.3`, encoded as the
+11 bytes `06 09 60 86 48 01 65 03 04 02 03`, and it is the same for
+ML-DSA-44/65/87 — its purpose is to tell the verifier *which pre-hash* was
+applied. (Confirmed against the FIPS 204 text and against Bouncy Castle's
+`HashMLDSASigner`, which derives the value from
+`DigestUtils.getDigestOid(digest.getAlgorithmName())`.)
+
+The crate instead embedded per-mode constants
+`06 0B 60 86 48 01 65 03 04 03 11/12/13`. Three separate errors:
+
+1. **Wrong OID family.** The value bytes decode to `2.16.840.1.101.3.4.3.17/18/19`
+   = `id-ml-dsa-44/65/87` — the *signature algorithm* identifiers used in
+   certificates, not a hash OID.
+2. **Malformed DER.** The length byte says `0x0B` (11) but only 9 content
+   bytes follow.
+3. **Wrong doc comment.** They were labelled
+   `id-HashML-DSA-*-with-SHA512`, which is yet a third thing
+   (`2.16.840.1.101.3.4.3.32/33/34`).
+
+**Impact.** `sign_prehash` / `verify_prehash` were self-consistent, so
+round-trip tests passed — but the signatures were **not FIPS 204 HashML-DSA
+signatures**: no conforming implementation could verify them, and conforming
+signatures failed here. Pure ML-DSA (`sign`/`verify`) was unaffected, which
+the KAT suite already proved.
+
+**Fix.** `params::SHA512_OID` holds the correct 11-byte DER encoding and is
+what goes into `M'`. The certificate identifiers are now exposed separately
+and correctly — `algorithm_oid()` (`id-ml-dsa-*`, sigAlgs 17–19) and
+`hash_algorithm_oid()` (`id-hash-ml-dsa-*-with-sha512`, sigAlgs 32–34) — with
+doc comments stating that neither participates in the signature computation.
+The `M'` construction is now a single shared function per domain
+(`sign::pure_prefix`, `sign::prehash_prefix`) instead of being duplicated
+across four call sites, and `tests/hash_ml_dsa_conformance.rs` pins its bytes
+against an independent literal transcription of Algorithm 4.
+
+**External validation.** The fix is confirmed against the **official NIST
+ACVP vectors** (`ML-DSA-sigGen-FIPS204`, external interface, `preHash`,
+SHA2-512): the deterministic vectors now reproduce byte-for-byte for all
+three parameter sets, and NIST's hedged pre-hash signatures verify. A
+negative control was run — restoring the pre-0.4.0 OID makes
+`acvp_siggen_prehash_sha512_deterministic` fail — so the test is not
+vacuous. See `tests/acvp_kat.rs`.
+
+**Compatibility.** This changes the HashML-DSA wire format. Signatures
+produced by v0.3.0 and earlier with `sign_prehash` no longer verify — they
+were never interoperable. Pure ML-DSA signatures and all key encodings are
+unchanged.
+
+### R2-2 — `Debug` printed the private key (Medium)
+
+`DilithiumKeyPair` derived `Debug`, and `Zeroizing<Vec<u8>>` forwards `Debug`
+to its inner `Vec`, so any `{:?}` of a key pair — a log line, a panic
+message, a `#[derive(Debug)]` on an enclosing struct — dumped the full
+plaintext private key. Replaced with a manual impl that prints the mode and
+the key lengths and renders the private key as `[REDACTED]`.
+
+### R2-3 — Secret sampling buffers not zeroized (Medium)
+
+`Poly::uniform_eta` and `Poly::uniform_gamma1` allocated a `Vec<u8>` (plus a
+stack block per refill), squeezed SHAKE256 into it, and dropped it. Those
+bytes *are* the secret material: the packed coefficients of `s1`/`s2` during
+key generation and of the mask `y` on **every** signing iteration (4–7
+buffers per iteration). They were left in freed heap memory, contradicting
+the crate's zeroization guarantee. All such buffers are now zeroized before
+going out of scope.
+
+Residual, documented: the `sha3` XOF reader state itself (a Keccak state
+derived from `rho'`) is not zeroizable through the `sha3` API.
+
+### R2-4 — `serde` `Deserialize` bypassed validation (Medium)
+
+The derived `Deserialize` populated the struct fields directly, so a key pair
+from an untrusted blob skipped every check that `from_bytes`/`from_keys`
+perform — its `mode` could disagree with its key lengths and its secret key
+need not satisfy `t = A·s1 + s2`. No panic or misverification resulted (that
+was confirmed by adversarial testing), but callers trusting
+`kp.private_key()` got unvalidated bytes, and a tampered secret key is
+exactly the input the Round-1 fault-attack hardening (F4) was meant to
+reject. `Deserialize` now goes through a private wire struct and
+`TryFrom` → `from_keys`, so deserialization enforces the same FIPS 204 §7.1
+invariants as every other constructor.
+
+### R2-5 / R2-6 — Reference-inherited short-circuits over secret values (Low)
+
+Both follow the C reference, which short-circuits too; both are now
+branchless, which is strictly stronger and bit-identical in output (the KAT
+suite still matches).
+
+- **`Poly::chknorm`** returned on the first coefficient exceeding the bound,
+  so the running time revealed the *position* of the first large coefficient
+  in a rejected `z = y + c·s1`, `w0 − c·s2` or `c·t0`. The accept path always
+  scanned everything, so only rejected (never-published) candidates leaked,
+  and the reference documents this as acceptable — but there is no reason to
+  keep it: the scan is now unconditional and accumulates a mask.
+  `polyvecl_chknorm` / `polyveck_chknorm` likewise no longer exit early on
+  the first offending polynomial.
+- **`rounding::make_hint`** was written as
+  `a0 > γ₂ || a0 < −γ₂ || (a0 == −γ₂ && a1 != 0)`. The hint *bit* is public
+  (it is in the signature), but the `||` short-circuit additionally
+  distinguishes `a0 > γ₂` from `a0 < −γ₂` — the sign of a secret `w0`
+  coefficient. Now computed with sign-bit masks; the truth table is pinned by
+  a test that compares it against the reference expression across the whole
+  reachable `a0` range for all three modes.
+
+### R2-7 — Secret residue in accumulator and pack temporaries (Low)
+
+`polyvecl_pointwise_acc_montgomery` did `let w_copy = w.clone(); Poly::add(w,
+&w_copy, &t)` inside the accumulation loop — a 1 KiB copy of a secret partial
+sum (`A·NTT(y)` during signing), left un-zeroized, for each of the K·L
+products. Replaced with in-place `add_assign` (also removing K·L copies of
+work per signature and per verification), and the `t` accumulator is
+zeroized. `polyeta_pack` and `polyt0_pack` now zeroize their 8-element
+temporaries, which hold `η − s` and `2^{D−1} − t0`.
+
+Verification was cloning three whole `PolyVecK`s for the same reason; it now
+uses in-place kernels (`polyveck_pointwise_poly_montgomery_assign`,
+`polyveck_use_hint_assign`, `polyveck_sub_assign`), whose equivalence with
+the out-of-place forms is tested.
+
+### R2-8 — Variable-time comparison of the secret `t0` (Low)
+
+`from_keys` compared `t0.vec[i].coeffs != t0_expected.vec[i].coeffs`. The loop
+correctly avoided an early `break`, but array `!=` is itself variable-time and
+reveals the first differing coefficient. Now an XOR-accumulated masked
+comparison. (Severity is low because the caller supplies both operands; this
+is not a signing or verification oracle.)
+
+### R2-9 — `to_bytes()` handed out unprotected secret bytes (Low)
+
+`to_bytes()` returned a plain `Vec<u8>` containing the plaintext secret key.
+It now returns `Zeroizing<Vec<u8>>`, which derefs to `Vec<u8>`/`[u8]` so
+existing call sites keep working, and the buffer is wiped on drop.
+
+### R2-10 — CI never executed the SIMD kernels (Medium, assurance)
+
+The AVX2 and NEON NTT kernels are the only `unsafe` code in the crate, and
+they live behind `#[cfg(feature = "simd")]`. CI ran `cargo test --release`
+and `cargo test --release --features serde` only; `--all-features` appeared
+solely in `cargo check`/`clippy`, which compile but never *run* the
+SIMD-vs-scalar equivalence tests. The hand-written Montgomery lane algebra
+therefore had zero executed coverage on either runner. CI now also runs
+`cargo test --release --features simd` and `--all-features`, so the AVX2
+kernels are exercised on the x86_64 runner and NEON on the macOS arm64 one —
+including the full 100-vector KAT suite through the SIMD path.
+
+### R2-11 — Non-wrapping nonce arithmetic (Info)
+
+`nonce + i as u16` in `polyvecl_uniform_eta` / `polyvecl_uniform_gamma1` /
+`polyveck_uniform_eta` would panic in a debug build if the outer nonce
+approached `u16::MAX` (~9,300 consecutive rejections; unreachable in
+practice, and the outer nonce was already `wrapping_add`). Made consistent
+with `wrapping_add`.
+
+## Checked and found correct (computationally verified)
+
+- **Montgomery arithmetic.** `Q·QINV ≡ 1 (mod 2³²)` confirmed; over 2M random
+  inputs spanning the full documented precondition range, `montgomery_reduce`
+  returns `r ≡ a·2⁻³² (mod Q)` with `|r| < Q`, and the wrapping `i32` multiply
+  exactly reproduces the C `(int32_t)a * QINV` semantics.
+- **ZETAS table.** All 255 used entries independently recomputed as centred
+  representatives of `1753^brv₈(k)·2³² mod Q` — zero mismatches. `ZETAS[0]`
+  is a never-indexed placeholder, as in the reference. `f = 41978 ≡ mont²/256
+  (mod Q)` confirmed.
+- **NTT.** `invntt(ntt(x)) = x·2³² mod Q`; `invntt(ntt(a) ∘ ntt(b))` equals a
+  schoolbook negacyclic product in `Z_Q[X]/(X²⁵⁶+1)` exactly.
+- **Coefficient growth.** No overflow anywhere: forward NTT ≤ ~9Q; inverse NTT
+  worst accumulation ≈1.6·10⁹ < 2³¹; the L-fold Montgomery accumulator stays
+  under `7Q ≈ 5.9·10⁷`, far inside `reduce32`'s `2³¹ − 2²² − 1` precondition
+  (now asserted at compile time in `polyvec.rs`); pointwise products ≈5.1·10¹⁵
+  < the `Q·2³¹` Montgomery precondition.
+- **Rounding.** `power2round` and `decompose` verified **exhaustively over all
+  8,380,417 field elements** for both γ₂ values, including the `γ₂=(Q−1)/88`
+  `a1 = 43 → 0` wrap and the `r⁺ − r0 = q−1` edge. `use_hint` verified against
+  Algorithm 40 at ~350K points including every multiple of 2γ₂ ±3, and the
+  scheme identity `UseHint(MakeHint(w0−e, w1), w−e) = w1` at 700K+ points.
+- **Samplers.** `rej_uniform` implements `CoeffFromThreeBytes` (23-bit mask,
+  `< Q`); both buffer sizes (840 initial, 168 per refill) are multiples of 3,
+  so dropping the reference's leftover-carry bookkeeping is exactly
+  equivalent. `rej_eta` matches `CoeffFromHalfByte` for both η. SampleInBall
+  absorbs the full `c̃` and uses Fisher–Yates with the 8 leading sign bytes.
+- **Domain separation.** ExpandA nonce `(i≪8)+j` little-endian; ExpandS nonces
+  `0..ℓ` and `ℓ..ℓ+k`; ExpandMask `κ·ℓ + i`; KeyGen `H(ξ‖k‖ℓ)` split 32/64/32;
+  `μ = H(tr‖M')`; `ρ'' = H(K‖rnd‖μ)`.
+- **Rejection bounds.** `‖z‖∞ ≥ γ₁−β`, `‖r0‖∞ ≥ γ₂−β`, `‖c·t0‖∞ ≥ γ₂`,
+  `popcount(h) > ω` — all with the FIPS-correct comparison operators; `c̃` is
+  written to the caller's buffer only after every check passes.
+- **Verification and malleability.** Exact signature length; `z` norm
+  re-checked before use; `w1' = UseHint(h, Az − c·2^d·t1)`; constant-time
+  `c̃` comparison; hint decoding enforces monotonically increasing indices,
+  cumulative counts ≤ ω and zero padding (FIPS 204 Algorithm 21).
+- **`unsafe` soundness.** Every `target_feature(enable = "avx2")` function is
+  reached only behind `is_x86_feature_detected!` (std) or
+  `cfg(target_feature = "avx2")` (no_std); NEON needs no gate on aarch64.
+  Loads/stores are the unaligned intrinsics (correct for a 4-byte-aligned
+  `[i32; 256]`); the loop invariants keep both the `[j..]` and `[j+len..]`
+  windows in bounds, and they are disjoint whenever the SIMD branch runs.
+- **Panic-freedom.** 34 adversarial cases through the public API — empty,
+  truncated, oversized and boundary-length inputs to `from_bytes`,
+  `from_public_key`, `from_keys`, `verify`, `verify_prehash`, cross-mode
+  signatures, `ctx` at 255/256/300 bytes, serde blobs with inconsistent
+  lengths — produced no panic. The three `unwrap()`s in library code are
+  infallible `try_into`s on fixed-size buffers.
+- **Feature/target matrix.** `--no-default-features`, `+serde`, `+simd`,
+  `+js`, `--all-features`, and the `thumbv7em-none-eabihf` /
+  `wasm32-unknown-unknown` targets all build clean, including no_std + simd
+  (confirming `is_x86_feature_detected!` does not leak into no_std).
+- **No secret-indexed lookups.** Every varying index is public: `ZETAS[k]`
+  (fixed schedule), the SampleInBall shuffle index (from the public `c̃`),
+  hint indices (public / attacker-supplied), and sequential writes in
+  rejection sampling.
+- **Dependencies.** `sha3` 0.10.8, `sha2` 0.10.9, `zeroize` 1.8.2, `subtle`
+  2.6.1, `getrandom` 0.2.17, `serde` 1.0.228 — current, no open advisories,
+  no build scripts, no C bindings; `deny.toml` is schema-v2 correct.
+
+### Correction to Round 1
+
+Round 1's "found correct" list stated that the HashML-DSA prefix used
+"correct per-mode OIDs". That was wrong on both counts — see R2-1. The
+per-mode OIDs it referred to were also malformed DER. Round 1 verified the
+prefix *structure* but never checked the OID bytes against the specification,
+and no test pinned them; the round-trip tests passed because signing and
+verification shared the same mistake. `tests/hash_ml_dsa_conformance.rs` now
+closes that gap.
+
+## External conformance vectors added
+
+Beyond the fixes, this round added the official NIST ACVP vectors to the test
+suite (`tests/acvp_kat.rs`, data in `tests/data/acvp_ml_dsa.json`):
+
+| Vector set | What it proves |
+|---|---|
+| `ML-DSA-keyGen-FIPS204`, 75 vectors (all 3 modes × 25) | `ξ → (pk, sk)` matches NIST exactly |
+| `ML-DSA-sigGen-FIPS204`, pure external deterministic, 12 vectors | Signatures match byte-for-byte with real context strings (0–245 bytes) |
+| `ML-DSA-sigGen-FIPS204`, `preHash` SHA2-512, 3 deterministic + 4 hedged | The pre-hash `M'` — OID included — is interoperable, not merely self-consistent |
+| `ML-DSA-sigVer-FIPS204`, external, 19 vectors | Valid signatures accepted; NIST's four negative classes (modified message, commitment `c̃`, hint, `z`) all rejected |
+
+Previously the only cross-implementation evidence was the pq-crystals
+C-reference KAT, which covers the pure path only — which is precisely why
+R2-1 went unnoticed for two releases.
+
+## Coverage
+
+Test coverage was raised from 99.47% of regions to **100% of regions, lines
+and functions** (`cargo llvm-cov --all-features`), enforced in CI. The gap
+mattered: the uncovered regions were precisely the security-relevant rare
+paths.
+
+| Previously uncovered | Now covered by |
+|---|---|
+| The `‖c·t0‖∞ ≥ γ₂` rejection branch (p ≈ 2⁻²³ per iteration with real keys) | `tests/rejection_paths.rs` — a secret key with enlarged `t0`, chosen so the bound is exceeded a few percent of the time while the hint weight stays under ω, so the loop still terminates |
+| The rejection-sampling refill loop in `RejNTTPoly` (unreachable with a real XOF, p < 2⁻¹⁰⁰) | An injectable `XofStream` whose first block is all `0xFF`, so every candidate is rejected; the result is compared against an independent re-derivation |
+| The `a0 == −γ₂` clause of `make_hint` | An exhaustive truth-table comparison against the reference expression |
+| RNG-failure paths | The new bring-your-own-RNG API with a failing entropy source, asserting no key or signature is produced |
+| Malformed-serde and corrupt-key-state guards | `tests/serde_coverage.rs` and unit tests constructing an inconsistent key pair |
+| SIMD kernels (compiled but never run in CI) | `cargo test --features simd` in CI on both runners |
+
+Two API changes came out of this: the `|ctx| ≤ 255` check is no longer
+duplicated between the safe wrappers and `sign::*` (it lives in one place, and
+the wrapper's error path is now reachable and tested), and the entropy hook is
+public, which both makes the failure path testable and gives `no_std` targets
+a way to use hedged signing without `getrandom`.
+
+## Reproducing this round
+
+```sh
+cargo test --all-features                   # 142 tests
+cargo test --release --features simd        # AVX2 / NEON kernels + KATs
+cargo llvm-cov --all-features \
+  --fail-under-lines 100 --fail-under-regions 100 --fail-under-functions 100
+cargo clippy --all-targets --all-features -- -D warnings
+cargo deny check
+python3 scripts/algebra_check.py src/ntt.rs # bit-exact arithmetic model
+cargo +nightly fuzz run fuzz_verify -- -max_total_time=300
+cargo build --no-default-features --target thumbv7em-none-eabihf
+cargo build --no-default-features --features js --target wasm32-unknown-unknown
+```
+
+## Residual risk
+
+- **Not a certified module.** No CMVP validation. (Interoperability itself
+  is now covered: official NIST ACVP keyGen/sigGen/sigVer vectors are in the
+  test suite, including SHA-512 HashML-DSA.)
+- **Pre-hash support is SHA-512 only.** FIPS 204 also approves SHA-256,
+  SHA3-224/256/384/512 and SHAKE-128/256 as pre-hash functions; ACVP vectors
+  for those are skipped rather than failed.
+- **Source-level constant-time only.** The branchless forms were reviewed at
+  source level; LLVM is free to reintroduce branches. A `dudect`-style or
+  valgrind/ctgrind measurement on release binaries is the next step.
+- **XOF state not zeroizable.** The `sha3` reader state derived from `rho'`
+  outlives sampling (see R2-3).
+- **AVX2 kernels not executed in this session** (aarch64 host); they are now
+  exercised by CI on x86_64, and their lane algebra was verified with a
+  bit-exact model.
+- **No formal verification.**
+
+---
+
+# Round 1 — v0.2.0 (2026-07-20)
 
 **Date:** 2026-07-20
 **Scope:** Full source review of `src/` (3,449 LoC), tests, fuzz targets, CI, and supply-chain config. Cross-checked against the CRYSTALS-Dilithium C reference implementation and FIPS 204 (final).
@@ -111,7 +487,9 @@ The rejection loop's `nonce: u16` increments by `l` per iteration; after ~9,300+
 
 - **Parameters** (`params.rs`): all constants (k, l, η, τ, β, γ₁, γ₂, ω, c̃ bytes, packed sizes, key/sig sizes) match FIPS 204 final for ML-DSA-44/65/87, including `TRBYTES = 64` and `RNDBYTES = 32` (hedged signing).
 - **Keygen**: correct domain separation `H(ξ ‖ k ‖ l)` per FIPS 204 (final), correct `power2round` split and `tr = H(pk)`.
-- **Signing**: message binding `μ = H(tr ‖ M')` with `M' = (0, |ctx|, ctx, M)` and prehash variant `(1, |ctx|, ctx, OID, SHA-512(M))` with correct per-mode OIDs; hedged `ρ' = H(K ‖ rnd ‖ μ)`; rejection bounds (γ₁−β, γ₂−β, γ₂, ω) all correct.
+- **Signing**: message binding `μ = H(tr ‖ M')` with `M' = (0, |ctx|, ctx, M)` and prehash variant `(1, |ctx|, ctx, OID, SHA-512(M))` ~~with correct per-mode OIDs~~; hedged `ρ' = H(K ‖ rnd ‖ μ)`; rejection bounds (γ₁−β, γ₂−β, γ₂, ω) all correct.
+  > **Retracted in Round 2:** the OID bytes were wrong (and malformed DER),
+  > and HashML-DSA does not use a per-mode OID at all — see R2-1.
 - **Verification**: signature length enforced, `z` norm re-checked, hint-weight rules enforced, challenge equality via `subtle::ct_eq`. Safe API additionally validates `pk` length.
 - **`unpack_sig` hint decoding**: enforces monotonically increasing indices, `end ≤ ω`, and zero padding — the strong-unforgeability (non-malleability) checks from the reference are all present.
 - **Arithmetic** (`reduce.rs`, `rounding.rs`, `ntt.rs`, scalar path): Montgomery/Barrett reduction, `decompose` for both γ₂ branches, `make_hint`/`use_hint`, zetas table, and butterfly structure match the C reference. The NEON Montgomery lane math (`vshrn_n_s64::<32>` arithmetic shift-narrow) is correct.

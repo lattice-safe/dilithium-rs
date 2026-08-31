@@ -20,7 +20,6 @@ fn bench_keygen(c: &mut Criterion) {
 
 fn bench_sign(c: &mut Criterion) {
     let seed = [42u8; SEEDBYTES];
-    let msg = [0u8; 1024];
     let rnd = [0u8; RNDBYTES];
     let ctx = b"";
     let mut group = c.benchmark_group("sign");
@@ -32,8 +31,17 @@ fn bench_sign(c: &mut Criterion) {
     ] {
         let (_, sk) = sign::keypair(mode, &seed);
         let mut sig = vec![0u8; mode.signature_bytes()];
+        // The message varies per iteration. With a fixed (sk, msg, rnd) the
+        // signing loop is deterministic, so the measurement would report the
+        // rejection count of that one case — which differs by an order of
+        // magnitude between cases and says nothing about the mode. Varying
+        // the message samples the rejection-count distribution instead.
+        let mut msg = [0u8; 1024];
+        let mut counter: u32 = 0;
         group.bench_function(name, |b| {
             b.iter(|| {
+                counter = counter.wrapping_add(1);
+                msg[..4].copy_from_slice(&counter.to_le_bytes());
                 sign::sign_signature(
                     black_box(mode),
                     black_box(&mut sig),

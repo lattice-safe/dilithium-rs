@@ -3,8 +3,8 @@ use libfuzzer_sys::fuzz_target;
 use dilithium::params::*;
 use dilithium::sign;
 
-/// Fuzz sign→verify round-trip across all three modes:
-/// any message must sign and verify.
+// Fuzz sign→verify round-trip across all three modes:
+// any message must sign and verify.
 fuzz_target!(|data: &[u8]| {
     // First byte selects the mode, next 32 bytes are the seed, rest is message
     if data.len() < 1 + SEEDBYTES {

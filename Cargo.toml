@@ -13,6 +13,11 @@ documentation = "https://docs.rs/dilithium-rs"
 keywords = ["ml-dsa", "fips-204", "dilithium", "post-quantum", "cryptography"]
 categories = ["cryptography", "no-std"]
 
+# `cfg(kani)` gates the formal-verification harnesses in src/verification.rs;
+# it is set by the Kani model checker, not by cargo.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
 [features]
 default = ["std"]
 std = ["getrandom"]

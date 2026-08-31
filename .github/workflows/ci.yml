@@ -93,6 +93,35 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo bench --no-run
 
+  proofs:
+    name: Exhaustive Proofs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # Verifies the arithmetic layer over complete finite domains (all of
+      # Z_q for the rounding functions, every coefficient value for the
+      # packers). Runs in about a second in release mode.
+      - run: cargo run --release --example exhaustive_proofs
+
+  kani:
+    name: Formal Verification (Kani)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Kani
+        run: |
+          cargo install --locked kani-verifier
+          cargo kani setup
+      # Bounded model checking of the arithmetic contracts and of the
+      # unpackers' output ranges on arbitrary attacker-supplied bytes.
+      # The Montgomery *congruence* harness is excluded: it rests on
+      # Q·QINV ≡ 1 (mod 2^32) and bit-blasting a 32-bit multiplicative
+      # inverse does not converge. That property is covered exhaustively by
+      # the exhaustive-proofs job instead. See src/verification.rs.
+      - run: cargo kani --exclude-harness proof_montgomery_reduce_congruence
+
   deny:
     name: Dependency Audit
     runs-on: ubuntu-latest

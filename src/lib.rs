@@ -109,6 +109,9 @@ pub mod shake;
 pub mod sign;
 #[doc(hidden)]
 pub mod symmetric;
+/// Kani proof harnesses — compiled only under `cfg(kani)`.
+#[cfg(kani)]
+mod verification;
 
 // ── Public re-exports (the SDK surface) ─────────────────────────
 pub use params::DilithiumMode;

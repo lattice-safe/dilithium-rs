@@ -214,14 +214,19 @@ cargo bench --bench dilithium_bench     # run benchmarks
 - **Branchless norm and hint checks** — `chknorm` scans every coefficient
   without early exit and `make_hint` is fully masked, so neither the position
   of an out-of-bound coefficient in a rejected candidate nor the sign of a
-  secret `w0` coefficient is exposed through timing (this goes beyond the C
-  reference, which short-circuits both)
+  secret `w0` coefficient is exposed through timing (the C reference
+  short-circuits both). Measured, not just intended: a dudect harness sees
+  the reference `chknorm` at \|t\| ≈ 16,000 and this one under \|t\| = 1
+  (`cargo run --release --example timing_check`)
 - **No secret residue** — the SHAKE output buffers that carry `s1`/`s2` and
   the mask `y`, the pack temporaries, and the pointwise accumulator are all
   zeroized; `Debug` on a key pair prints `[REDACTED]`
 - **Fuzz tested** — 4 targets (key/signature decoding, sign→verify
-  round-trip, adversarial verification). The three original targets have
-  41M+ cumulative executions with 0 crashes; `fuzz_verify` is new in 0.4.0
+  round-trip, adversarial verification). The 0.4.0 campaign ran ~1.1 billion
+  executions (8 minutes per target) with no crashes and no hangs. On macOS 26
+  `cargo fuzz` must be run with `--sanitizer=none`, or the binary deadlocks in
+  ASan's initializer and silently fuzzes nothing — see
+  [fuzz/README.md](fuzz/README.md)
 
 See [SECURITY.md](SECURITY.md) for responsible disclosure and scope.
 
@@ -286,7 +291,7 @@ Measure coverage in a glibc container (mirrors the CI job):
 
 ```bash
 docker build -f Dockerfile.coverage -t dilithium-rs-coverage .
-docker run --rm dilithium-rs-coverage    # cargo llvm-cov --all-features, 100% gate
+docker run --rm dilithium-rs-coverage    # cargo llvm-cov, 100% gate (SIMD modules excluded)
 ```
 
 ## Feature Flags
@@ -297,6 +302,11 @@ docker run --rm dilithium-rs-coverage    # cargo llvm-cov --all-features, 100% g
 | `serde` | ❌      | `Serialize`/`Deserialize` for key pairs and signatures |
 | `simd`  | ❌      | AVX2 (x86_64) and NEON (AArch64) NTT acceleration |
 | `js`    | ❌      | `getrandom/js` for WASM browser targets |
+| `kani-slow` | ❌  | Adds one Kani harness that does not converge; verification only, no effect on builds |
+
+**MSRV: 1.85** (checked in CI). Without `std`/`getrandom`, use
+`generate_deterministic` / `sign_deterministic` or the `*_with_rng` entry
+points.
 
 ## Verification Status
 
@@ -311,7 +321,7 @@ than taken on faith. Details in [SECURITY_AUDIT.md](SECURITY_AUDIT.md).
 | Arithmetic layer, formal | Kani bounded model checking of the same contracts *symbolically*, plus absence of panics/overflow/OOB, plus the unpackers' output ranges for arbitrary attacker-supplied bytes — 13 harnesses discharge; `cargo kani` |
 | Constant time | dudect-style measurement of the branchless `chknorm` and `make_hint` against the reference short-circuiting forms as positive controls: the `chknorm` control fires at \|t\| ≈ 16,000 while the shipped version stays under \|t\| = 1. The `make_hint` control does *not* fire — LLVM already compiles the reference short-circuit branchlessly on aarch64, so there was nothing to detect on this target |
 | Test coverage | 100% of regions, lines and functions (`cargo llvm-cov --all-features`), enforced in CI. The two per-architecture SIMD modules are excluded from the gate: on any one machine, another architecture's kernels — and its tests — are unreachable code. Their correctness is covered by the SIMD-vs-scalar equivalence tests and the KAT suite, run on both x86_64 and aarch64 |
-| Memory safety | 34 adversarial public-API cases produce no panic; all `unsafe` is confined to the SIMD NTT and reviewed for feature-gating, bounds and aliasing |
+| Memory safety | No panic on adversarial input: the `fuzz_from_bytes` / `fuzz_unpack_sig` / `fuzz_verify` targets hammer every decoding entry point, `tests/api_coverage.rs` pins the boundary cases, and the audit additionally swept 34 hand-written malformed-input cases. All `unsafe` is confined to the two SIMD NTT modules and reviewed for feature-gating, bounds and aliasing |
 | SIMD kernels | NEON exercised locally (full KAT suite through the SIMD path); AVX2 exercised under QEMU via `./scripts/test-avx2-docker.sh`, and in CI on the x86_64 runner |
 | Fuzzing | 4 targets, ~1.1 billion executions in this round (8 min each), no crashes and no hangs. Note: `cargo fuzz` must be run with `--sanitizer=none` on macOS 26 — see `fuzz/README.md` |
 | Secret hygiene | Key material, sampling buffers, packing temporaries and the Keccak sponge state are all zeroized; `Debug` redacts the private key |

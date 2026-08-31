@@ -29,6 +29,9 @@
 //! | `serde` | ❌      | Enables `Serialize`/`Deserialize` for key pairs, signatures, and modes |
 //! | `simd`  | ❌      | Enables AVX2 (x86_64) and NEON (AArch64) NTT acceleration |
 //! | `js`    | ❌      | Enables `getrandom/js` for WASM browser targets |
+//! | `kani-slow` | ❌  | Adds one Kani harness that does not converge; verification only |
+//!
+//! MSRV: 1.85.
 //!
 //! # Platform Support
 //!

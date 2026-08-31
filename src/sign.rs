@@ -237,6 +237,60 @@ pub fn sign_signature_internal(
     siglen
 }
 
+/// Build the pure ML-DSA domain-separation prefix of `M'` (FIPS 204 §6.2,
+/// Algorithms 2 and 3):
+///
+/// ```text
+/// M' = IntegerToBytes(0, 1) || IntegerToBytes(|ctx|, 1) || ctx || M
+/// ```
+///
+/// Returns `None` if `ctx` exceeds the 255-byte limit mandated by FIPS 204.
+#[must_use]
+pub fn pure_prefix(ctx: &[u8]) -> Option<Vec<u8>> {
+    if ctx.len() > 255 {
+        return None;
+    }
+    let mut pre = vec![0u8; 2 + ctx.len()];
+    pre[0] = 0;
+    pre[1] = ctx.len() as u8;
+    pre[2..].copy_from_slice(ctx);
+    Some(pre)
+}
+
+/// Build the complete HashML-DSA message representative `M'`
+/// (FIPS 204 §5.4, Algorithms 4 and 5, line 21):
+///
+/// ```text
+/// M' = IntegerToBytes(1, 1) || IntegerToBytes(|ctx|, 1) || ctx || OID || PH_M
+/// ```
+///
+/// `OID` is the DER encoding of the **pre-hash function's** object identifier
+/// — [`SHA512_OID`] here — and is therefore identical for ML-DSA-44/65/87.
+/// `PH_M` is `SHA-512(M)`.
+///
+/// Returns `None` if `ctx` exceeds the 255-byte limit mandated by FIPS 204.
+#[must_use]
+pub fn prehash_prefix(msg: &[u8], ctx: &[u8]) -> Option<Vec<u8>> {
+    if ctx.len() > 255 {
+        return None;
+    }
+
+    use sha2::Digest;
+    let ph_m = sha2::Sha512::digest(msg);
+
+    let oid = SHA512_OID;
+    let mut pre = vec![0u8; 2 + ctx.len() + oid.len() + ph_m.len()];
+    pre[0] = 1; // pre-hash domain separator
+    pre[1] = ctx.len() as u8;
+    let mut off = 2;
+    pre[off..off + ctx.len()].copy_from_slice(ctx);
+    off += ctx.len();
+    pre[off..off + oid.len()].copy_from_slice(oid);
+    off += oid.len();
+    pre[off..off + ph_m.len()].copy_from_slice(&ph_m);
+    Some(pre)
+}
+
 /// Sign a message with context string.
 ///
 /// Returns 0 on success, or -1 on error (context too long, bad sk/sig length).
@@ -248,15 +302,9 @@ pub fn sign_signature(
     rnd: &[u8; RNDBYTES],
     sk: &[u8],
 ) -> i32 {
-    if ctx.len() > 255 {
+    let Some(pre) = pure_prefix(ctx) else {
         return -1;
-    }
-
-    // Build prefix: (0, ctxlen, ctx)
-    let mut pre = vec![0u8; 2 + ctx.len()];
-    pre[0] = 0;
-    pre[1] = ctx.len() as u8;
-    pre[2..].copy_from_slice(ctx);
+    };
 
     if sign_signature_internal(mode, sig, m, &pre, rnd, sk) == 0 {
         return -1;
@@ -342,21 +390,17 @@ pub fn verify_internal(mode: DilithiumMode, sig: &[u8], m: &[u8], pre: &[u8], pk
 /// Verify a signature with context string (pure ML-DSA, FIPS 204 §6.1).
 #[must_use]
 pub fn verify(mode: DilithiumMode, sig: &[u8], m: &[u8], ctx: &[u8], pk: &[u8]) -> bool {
-    if ctx.len() > 255 {
+    let Some(pre) = pure_prefix(ctx) else {
         return false;
-    }
-
-    let mut pre = vec![0u8; 2 + ctx.len()];
-    pre[0] = 0;
-    pre[1] = ctx.len() as u8;
-    pre[2..].copy_from_slice(ctx);
+    };
 
     verify_internal(mode, sig, m, &pre, pk)
 }
 
-/// HashML-DSA Sign (FIPS 204 §6.2).
+/// HashML-DSA Sign (FIPS 204 §5.4 / §6.2, Algorithm 4).
 ///
-/// Signs `SHA-512(msg)` instead of `msg` directly, embedding the hash OID.
+/// Signs `SHA-512(msg)` instead of `msg` directly, embedding the DER-encoded
+/// SHA-512 OID in the message representative `M'`.
 pub fn sign_hash(
     mode: DilithiumMode,
     sig: &mut [u8],
@@ -365,25 +409,9 @@ pub fn sign_hash(
     rnd: &[u8; RNDBYTES],
     sk: &[u8],
 ) -> i32 {
-    if ctx.len() > 255 {
+    let Some(pre) = prehash_prefix(msg, ctx) else {
         return -1;
-    }
-
-    // Hash the message with SHA-512
-    use sha2::Digest;
-    let ph_m = sha2::Sha512::digest(msg);
-
-    // Build prefix: (1, ctxlen, ctx, OID, H(msg))
-    let oid = mode.hash_oid();
-    let mut pre = vec![0u8; 2 + ctx.len() + oid.len() + ph_m.len()];
-    pre[0] = 1; // prehash indicator
-    pre[1] = ctx.len() as u8;
-    let mut off = 2;
-    pre[off..off + ctx.len()].copy_from_slice(ctx);
-    off += ctx.len();
-    pre[off..off + oid.len()].copy_from_slice(oid);
-    off += oid.len();
-    pre[off..off + ph_m.len()].copy_from_slice(&ph_m);
+    };
 
     if sign_signature_internal(mode, sig, &[], &pre, rnd, sk) == 0 {
         return -1;
@@ -391,28 +419,15 @@ pub fn sign_hash(
     0
 }
 
-/// HashML-DSA Verify (FIPS 204 §6.2).
+/// HashML-DSA Verify (FIPS 204 §5.4 / §6.2, Algorithm 5).
 ///
-/// Verifies against `SHA-512(msg)` with the hash OID embedded.
+/// Verifies against `SHA-512(msg)` with the DER-encoded SHA-512 OID embedded
+/// in the message representative `M'`.
 #[must_use]
 pub fn verify_hash(mode: DilithiumMode, sig: &[u8], msg: &[u8], ctx: &[u8], pk: &[u8]) -> bool {
-    if ctx.len() > 255 {
+    let Some(pre) = prehash_prefix(msg, ctx) else {
         return false;
-    }
-
-    use sha2::Digest;
-    let ph_m = sha2::Sha512::digest(msg);
-
-    let oid = mode.hash_oid();
-    let mut pre = vec![0u8; 2 + ctx.len() + oid.len() + ph_m.len()];
-    pre[0] = 1;
-    pre[1] = ctx.len() as u8;
-    let mut off = 2;
-    pre[off..off + ctx.len()].copy_from_slice(ctx);
-    off += ctx.len();
-    pre[off..off + oid.len()].copy_from_slice(oid);
-    off += oid.len();
-    pre[off..off + ph_m.len()].copy_from_slice(&ph_m);
+    };
 
     verify_internal(mode, sig, &[], &pre, pk)
 }

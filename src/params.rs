@@ -67,17 +67,53 @@ pub const ML_DSA_65: DilithiumMode = DilithiumMode::Dilithium3;
 /// FIPS 204 type alias: ML-DSA-87 ≡ Dilithium5.
 pub const ML_DSA_87: DilithiumMode = DilithiumMode::Dilithium5;
 
-/// OID for id-HashML-DSA-44-with-SHA512 (FIPS 204 §6.2).
+/// DER encoding of the SHA-512 object identifier `2.16.840.1.101.3.4.2.3`.
+///
+/// This is the `OID` value that FIPS 204 Algorithm 4 / 5 (`HashML-DSA.Sign` /
+/// `HashML-DSA.Verify`) inserts into the pre-hash message representative
+///
+/// ```text
+/// M' = IntegerToBytes(1, 1) || IntegerToBytes(|ctx|, 1) || ctx || OID || PH_M
+/// ```
+///
+/// It identifies the **pre-hash function**, and is therefore the same for
+/// ML-DSA-44/65/87 — it must not be confused with the algorithm-identifier
+/// OIDs below, which name the (Hash)ML-DSA algorithm in certificates.
+pub const SHA512_OID: &[u8] = &[
+    0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x03,
+];
+
+/// DER encoding of `id-ml-dsa-44` = `2.16.840.1.101.3.4.3.17` (NIST CSOR).
+///
+/// Algorithm identifier for **pure** ML-DSA-44 in X.509 / CMS structures.
+/// Not used inside the signature computation.
+pub const ML_DSA_44_OID: &[u8] = &[
+    0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x11,
+];
+/// DER encoding of `id-ml-dsa-65` = `2.16.840.1.101.3.4.3.18` (NIST CSOR).
+pub const ML_DSA_65_OID: &[u8] = &[
+    0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x12,
+];
+/// DER encoding of `id-ml-dsa-87` = `2.16.840.1.101.3.4.3.19` (NIST CSOR).
+pub const ML_DSA_87_OID: &[u8] = &[
+    0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x13,
+];
+
+/// DER encoding of `id-hash-ml-dsa-44-with-sha512` = `2.16.840.1.101.3.4.3.32`.
+///
+/// Algorithm identifier for HashML-DSA-44 with SHA-512 in X.509 / CMS
+/// structures. Not used inside the signature computation — see
+/// [`SHA512_OID`] for the value that goes into `M'`.
 pub const HASH_ML_DSA_44_OID: &[u8] = &[
-    0x06, 0x0B, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x11,
+    0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x20,
 ];
-/// OID for id-HashML-DSA-65-with-SHA512 (FIPS 204 §6.2).
+/// DER encoding of `id-hash-ml-dsa-65-with-sha512` = `2.16.840.1.101.3.4.3.33`.
 pub const HASH_ML_DSA_65_OID: &[u8] = &[
-    0x06, 0x0B, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x12,
+    0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x21,
 ];
-/// OID for id-HashML-DSA-87-with-SHA512 (FIPS 204 §6.2).
+/// DER encoding of `id-hash-ml-dsa-87-with-sha512` = `2.16.840.1.101.3.4.3.34`.
 pub const HASH_ML_DSA_87_OID: &[u8] = &[
-    0x06, 0x0B, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x13,
+    0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x22,
 ];
 
 impl DilithiumMode {
@@ -260,15 +296,45 @@ impl DilithiumMode {
         self.ctildebytes() + self.l() * self.polyz_packedbytes() + self.omega() + self.k()
     }
 
-    /// Get the HashML-DSA OID for this mode.
+    /// DER-encoded algorithm-identifier OID for **pure** ML-DSA
+    /// (`id-ml-dsa-44/65/87`), for use in X.509 / CMS structures.
     #[inline]
     #[must_use]
-    pub fn hash_oid(self) -> &'static [u8] {
+    pub const fn algorithm_oid(self) -> &'static [u8] {
+        match self {
+            Self::Dilithium2 => ML_DSA_44_OID,
+            Self::Dilithium3 => ML_DSA_65_OID,
+            Self::Dilithium5 => ML_DSA_87_OID,
+        }
+    }
+
+    /// DER-encoded algorithm-identifier OID for HashML-DSA with SHA-512
+    /// (`id-hash-ml-dsa-44/65/87-with-sha512`), for use in X.509 / CMS
+    /// structures.
+    ///
+    /// # Warning
+    ///
+    /// This is **not** the OID that FIPS 204 puts into the pre-hash message
+    /// representative `M'`; that is [`SHA512_OID`], the OID of the pre-hash
+    /// function itself. Signing and verification use [`SHA512_OID`].
+    #[inline]
+    #[must_use]
+    pub const fn hash_algorithm_oid(self) -> &'static [u8] {
         match self {
             Self::Dilithium2 => HASH_ML_DSA_44_OID,
             Self::Dilithium3 => HASH_ML_DSA_65_OID,
             Self::Dilithium5 => HASH_ML_DSA_87_OID,
         }
+    }
+
+    /// DER-encoded OID of the pre-hash function used by this crate's
+    /// HashML-DSA implementation (always SHA-512).
+    ///
+    /// This is the `OID` field of FIPS 204's `M'` (Algorithm 4 line 21).
+    #[inline]
+    #[must_use]
+    pub const fn prehash_oid(self) -> &'static [u8] {
+        SHA512_OID
     }
 
     /// FIPS 204 algorithm name.

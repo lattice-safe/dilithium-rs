@@ -230,16 +230,79 @@ fn test_signature_from_bytes_roundtrip() {
 // ================================================================
 
 #[test]
-fn test_hash_oid_lengths() {
+fn test_oid_der_encoding_is_well_formed() {
     for mode in [
         DilithiumMode::Dilithium2,
         DilithiumMode::Dilithium3,
         DilithiumMode::Dilithium5,
     ] {
-        let oid = mode.hash_oid();
-        assert_eq!(oid.len(), 11, "OID should be 11 bytes (DER-encoded)");
-        assert_eq!(oid[0], 0x06, "OID should start with 0x06");
+        for (name, oid) in [
+            ("algorithm_oid", mode.algorithm_oid()),
+            ("hash_algorithm_oid", mode.hash_algorithm_oid()),
+            ("prehash_oid", mode.prehash_oid()),
+        ] {
+            // DER: tag 0x06 (OBJECT IDENTIFIER), then a definite short-form
+            // length that must equal the number of remaining content bytes.
+            assert_eq!(oid[0], 0x06, "{name}: OID must start with tag 0x06");
+            assert_eq!(
+                oid[1] as usize,
+                oid.len() - 2,
+                "{name}: DER length byte must match the content length"
+            );
+            // 2.16.840.1.101.3.4.* — the NIST CSOR arc.
+            assert_eq!(
+                &oid[2..9],
+                &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04],
+                "{name}: must live under 2.16.840.1.101.3.4"
+            );
+        }
     }
+}
+
+/// FIPS 204 Algorithm 4/5 line 21: the OID embedded in `M'` identifies the
+/// *pre-hash function*, so it is the SHA-512 OID 2.16.840.1.101.3.4.2.3 and
+/// is identical for all three parameter sets.
+#[test]
+fn test_prehash_oid_is_sha512_and_mode_independent() {
+    const SHA512_DER: [u8; 11] = [
+        0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x03,
+    ];
+    for mode in [
+        DilithiumMode::Dilithium2,
+        DilithiumMode::Dilithium3,
+        DilithiumMode::Dilithium5,
+    ] {
+        assert_eq!(mode.prehash_oid(), &SHA512_DER);
+    }
+    assert_eq!(dilithium::params::SHA512_OID, &SHA512_DER);
+}
+
+/// The algorithm-identifier OIDs are distinct per mode and distinct between
+/// the pure and pre-hash variants (NIST CSOR sigAlgs 17-19 and 32-34).
+#[test]
+fn test_algorithm_oids_are_distinct() {
+    use dilithium::params::*;
+    let all = [
+        ML_DSA_44_OID,
+        ML_DSA_65_OID,
+        ML_DSA_87_OID,
+        HASH_ML_DSA_44_OID,
+        HASH_ML_DSA_65_OID,
+        HASH_ML_DSA_87_OID,
+    ];
+    for i in 0..all.len() {
+        for j in (i + 1)..all.len() {
+            assert_ne!(all[i], all[j], "OIDs {i} and {j} must differ");
+        }
+        // sigAlgs arc: 2.16.840.1.101.3.4.3.<n>
+        assert_eq!(all[i][9], 0x03);
+    }
+    assert_eq!(ML_DSA_44_OID[10], 17);
+    assert_eq!(ML_DSA_65_OID[10], 18);
+    assert_eq!(ML_DSA_87_OID[10], 19);
+    assert_eq!(HASH_ML_DSA_44_OID[10], 32);
+    assert_eq!(HASH_ML_DSA_65_OID[10], 33);
+    assert_eq!(HASH_ML_DSA_87_OID[10], 34);
 }
 
 #[test]

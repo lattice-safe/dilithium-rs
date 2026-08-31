@@ -142,7 +142,9 @@ dilithium-rs = { version = "0.4", default-features = false }
 ```
 
 All dependencies support `no_std` and `wasm32-unknown-unknown`:
-- `sha3`, `sha2` — SHAKE/SHA hashing
+- `keccak` — Keccak-f[1600] permutation (the SHAKE sponge lives in this
+  crate so its state can be zeroized)
+- `sha2` — SHA-512 for the HashML-DSA pre-hash
 - `subtle` — constant-time comparison
 - `zeroize` — secret material cleanup
 - `getrandom` — OS entropy (uses `crypto.getRandomValues` in WASM)
@@ -152,19 +154,22 @@ All dependencies support `no_std` and `wasm32-unknown-unknown`:
 Re-measured for 0.4.0 on an idle Apple M1 Max (macOS 26.5, rustc 1.93 nightly,
 Apple clang 21). Rust: Criterion point estimate, default features (no `simd`).
 C: the pq-crystals `ref/` implementation built with `cc -O3
--fomit-frame-pointer`, mean over 20,000 iterations.
+-fomit-frame-pointer`, mean over 20,000 iterations. Each side was run three
+times alternately; the table reports the **median** of the three, because
+run-to-run drift on a laptop is larger than most of the differences being
+compared (observed spread: Rust ≤ 5%, C ≤ 12%).
 
 | Operation | Mode | Rust (µs) | C ref (µs) | Ratio |
 |-----------|------|-----------|-----------|-------|
-| keygen | ML-DSA-44 | 70.2 | 64.2 | 1.09× |
-| keygen | ML-DSA-65 | 118.2 | 115.0 | 1.03× |
-| keygen | ML-DSA-87 | 177.5 | 182.3 | **0.97×** ✅ |
-| sign | ML-DSA-44 | 218.2 | 281.4 | **0.78×** ✅ |
-| sign | ML-DSA-65 | 352.4 | 511.3 | **0.69×** ✅ |
-| sign | ML-DSA-87 | 412.5 | 654.9 | **0.63×** ✅ |
-| verify | ML-DSA-44 | 62.5 | 73.6 | **0.85×** ✅ |
-| verify | ML-DSA-65 | 108.6 | 126.3 | **0.86×** ✅ |
-| verify | ML-DSA-87 | 169.9 | 183.4 | **0.93×** ✅ |
+| keygen | ML-DSA-44 | 54.3 | 53.5 | 1.02× |
+| keygen | ML-DSA-65 | 87.9 | 104.2 | **0.84×** ✅ |
+| keygen | ML-DSA-87 | 137.5 | 148.5 | **0.93×** ✅ |
+| sign | ML-DSA-44 | 179.3 | 249.7 | **0.72×** ✅ |
+| sign | ML-DSA-65 | 284.0 | 397.9 | **0.71×** ✅ |
+| sign | ML-DSA-87 | 347.1 | 487.9 | **0.71×** ✅ |
+| verify | ML-DSA-44 | 52.3 | 62.7 | **0.83×** ✅ |
+| verify | ML-DSA-65 | 82.3 | 97.1 | **0.85×** ✅ |
+| verify | ML-DSA-87 | 134.2 | 162.1 | **0.83×** ✅ |
 
 Ratios below 1.0 mean Rust is faster. Both harnesses run the **same**
 methodology, which differs from the pre-0.4.0 table:
@@ -179,10 +184,14 @@ methodology, which differs from the pre-0.4.0 table:
   `/dev/urandom`).
 - Both use the ctx-level API with `ctx = ""` and a 1024-byte message.
 
-The signing gap is dominated by the SHAKE implementation (Dilithium spends
-most of its time in Keccak): this crate uses RustCrypto `sha3`, the reference
-uses its bundled `fips202.c`. The comparison is against the reference `ref/`
-code, **not** the hand-optimized AVX2 variant.
+The gap is dominated by the SHAKE implementation, since Dilithium spends most
+of its time in Keccak: this crate's sponge (`src/shake.rs`) sits on the
+RustCrypto `keccak` permutation, absorbing and squeezing whole 64-bit lanes,
+while the reference uses its bundled `fips202.c`. Replacing the `sha3` crate
+with that sponge in 0.4.0 (so the state could be zeroized — see
+`SECURITY_AUDIT.md` R2-12) also improved every ratio by a few points, which
+was not the goal but is welcome. The comparison is against the reference
+`ref/` code, **not** the hand-optimized AVX2 variant.
 
 ```bash
 cargo bench --bench dilithium_bench     # run benchmarks
@@ -219,15 +228,25 @@ See [SECURITY.md](SECURITY.md) for responsible disclosure and scope.
 ## Test Suite
 
 ```
-cargo test --all-features               # all 147 tests
+cargo test --all-features               # all 154 tests
 cargo test --features serde             # with serde
 cargo test --features simd              # with SIMD (AVX2 / NEON kernels)
 cargo clippy --all-targets --all-features -- -D warnings  # 0 warnings
 ```
 
+Verification beyond the test suite:
+
+```
+cargo run --release --example exhaustive_proofs  # complete finite domains
+cargo kani                                      # bounded model checking
+cargo run --release --example timing_check       # dudect timing measurement
+./scripts/test-avx2-docker.sh                    # AVX2 kernels under QEMU
+python3 scripts/algebra_check.py src/ntt.rs      # bit-exact arithmetic model
+```
+
 | Suite | Tests | What |
 |-------|-------|------|
-| Unit | 41 | NTT, reduce, rounding, symmetric, poly, SIMD-vs-scalar, sampler refill paths, RNG-failure and `Debug` redaction |
+| Unit | 48 | NTT, reduce, rounding, SHAKE-vs-`sha3` at every rate boundary, poly, SIMD-vs-scalar, sampler refill paths, RNG-failure and `Debug` redaction |
 | API coverage | 33 | Error `Display`, mode tags, serialization error paths, hint decodings, bring-your-own-RNG |
 | Coverage | 20 | Edge cases, error paths, boundaries, OID DER encoding, in-place vs out-of-place kernels |
 | **ACVP** | **5** | **Official NIST vectors: 75 keyGen, 12 pure sigGen (ctx 0–245 B), SHA-512 HashML-DSA sigGen/verify, 19 sigVer incl. all four negative reasons** |
@@ -283,26 +302,29 @@ than taken on faith. Details in [SECURITY_AUDIT.md](SECURITY_AUDIT.md).
 |------|--------|
 | FIPS 204 conformance, pure ML-DSA | Official NIST ACVP keyGen/sigGen/sigVer vectors pass; bit-for-bit match with the pq-crystals C reference over 100 vectors × 3 modes |
 | FIPS 204 conformance, HashML-DSA (SHA-512) | Official NIST ACVP vectors pass, byte-for-byte on the deterministic cases (fixed in 0.4.0 — earlier versions embedded the wrong OID) |
-| Arithmetic layer | `power2round`/`decompose` verified exhaustively over all 8,380,417 field elements; ZETAS table recomputed from the root of unity; NTT checked against schoolbook negacyclic convolution — `python3 scripts/algebra_check.py src/ntt.rs` |
+| Arithmetic layer, exhaustive | `power2round`, `decompose` and `use_hint` verified over **all 8,380,417 field elements**; `make_hint` over every reachable `(a0, a1)`; every packer over every coefficient value; the hint lemma the scheme rests on — `cargo run --release --example exhaustive_proofs` |
+| Arithmetic layer, formal | Kani bounded model checking of the same contracts *symbolically*, plus absence of panics/overflow/OOB, plus the unpackers' output ranges for arbitrary attacker-supplied bytes — 13 harnesses discharge; `cargo kani` |
+| Constant time | dudect-style measurement of the branchless `chknorm` and `make_hint` against the reference short-circuiting forms as positive controls: the `chknorm` control fires at \|t\| ≈ 16,000 while the shipped version stays under \|t\| = 1. The `make_hint` control does *not* fire — LLVM already compiles the reference short-circuit branchlessly on aarch64, so there was nothing to detect on this target |
 | Test coverage | 100% of regions, lines and functions (`cargo llvm-cov --all-features`), enforced in CI |
 | Memory safety | 34 adversarial public-API cases produce no panic; all `unsafe` is confined to the SIMD NTT and reviewed for feature-gating, bounds and aliasing |
-| Fuzzing | 4 targets, no crashes. The three original targets have 41M+ cumulative executions; `fuzz_verify` is new and has only had short runs |
+| SIMD kernels | NEON exercised locally (full KAT suite through the SIMD path); AVX2 exercised under QEMU via `./scripts/test-avx2-docker.sh`, and in CI on the x86_64 runner |
+| Fuzzing | 4 targets, ~1.1 billion executions in this round (8 min each), no crashes and no hangs. Note: `cargo fuzz` must be run with `--sanitizer=none` on macOS 26 — see `fuzz/README.md` |
+| Secret hygiene | Key material, sampling buffers, packing temporaries and the Keccak sponge state are all zeroized; `Debug` redacts the private key |
+| API stability | `cargo semver-checks` against 0.3.0: one breaking change detected (`DilithiumMode::hash_oid` removed), covered by the major bump |
 
 Known gaps, stated plainly:
 
 - **Not CMVP-validated.** Do not use where a certified module is required.
-- **Constant-time claims are source-level.** The branchless `chknorm` and
-  `make_hint` were verified against the reference truth table with a
-  bit-exact model, but LLVM may reintroduce branches; no `dudect`/ctgrind
-  measurement has been done on release binaries.
-- **AVX2 kernels are exercised by CI on x86_64 only.** They were not executed
-  during development (aarch64 host); their lane algebra was verified with a
-  bit-exact model, and the NEON path runs the full KAT suite locally.
+- **The scheme as a whole is not mechanically proven.** The arithmetic layer
+  is (see above), but the signing/verification protocol and the security
+  reduction are not formalized.
 - **Pre-hash support is SHA-512 only.** FIPS 204 also approves SHA-256,
-  SHA3-\* and SHAKE-\*.
-- **The `sha3` XOF state is not zeroizable** through its API, so the Keccak
-  state derived from `ρ'` outlives sampling.
-- **No formal verification.**
+  SHA3-\* and SHAKE-\*; ACVP vectors for those are skipped, not failed.
+- **Constant-time evidence is statistical, not a proof.** "No leak detected"
+  bounds what the sample size could see; it is not a guarantee, and a
+  different compiler or target may differ.
+- **No CMVP-style operational testing** of the RNG, key storage or
+  parameter selection — those are the caller's responsibility.
 
 ## License
 

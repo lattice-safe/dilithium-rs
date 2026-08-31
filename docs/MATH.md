@@ -228,9 +228,11 @@ flowchart TD
         CHECK1 -- "Too big → retry ↺" --> LOOP_START
         CHECK1 -- "OK ✓" --> CHECK2{"Check 2:\nDo low bits overflow?\n(would break verification)"}
         CHECK2 -- "Overflow → retry ↺" --> LOOP_START
-        CHECK2 -- "OK ✓" --> CHECK3{"Check 3:\nToo many hint bits?\n(> ω corrections needed)"}
-        CHECK3 -- "Too many → retry ↺" --> LOOP_START
-        CHECK3 -- "All clear ✓" --> OUTPUT
+        CHECK2 -- "OK ✓" --> CHECK3{"Check 3:\nIs c × t₀ too big?\n(hint could not absorb it)"}
+        CHECK3 -- "Too big → retry ↺" --> LOOP_START
+        CHECK3 -- "OK ✓" --> CHECK4{"Check 4:\nToo many hint bits?\n(> ω corrections needed)"}
+        CHECK4 -- "Too many → retry ↺" --> LOOP_START
+        CHECK4 -- "All clear ✓" --> OUTPUT
     end
 
     OUTPUT["✍️ Signature = (c̃, z, hints)"]
@@ -301,9 +303,11 @@ The sparsity keeps c × s₁ small (so the signature stays compact).
 
 The mask y hides s₁, and the challenge c ties it to the specific message.
 
-### 4.3 The Three Safety Checks
+### 4.3 The Four Safety Checks
 
-The checks ensure the signature doesn't accidentally reveal the secret:
+The checks ensure the signature doesn't accidentally reveal the secret, and
+that the verifier — who knows only the *rounded* public key `t₁` — can still
+reconstruct `w₁`:
 
 ```
   ┌─────────────────────────────────────────────────────────┐
@@ -327,7 +331,23 @@ The checks ensure the signature doesn't accidentally reveal the secret:
   └─────────────────────────────────────────────────────────┘
 
   ┌─────────────────────────────────────────────────────────┐
-  │ CHECK 3:  Are there ≤ ω hint corrections?                │
+  │ CHECK 3:  Is every coefficient of c·t₀ small enough?      │
+  │           Need: |(c·t₀)ᵢ| < γ₂                          │
+  │                                                         │
+  │   WHY: The public key only carries t₁ = high bits of t. │
+  │   The verifier computes A·z − c·2ᵈ·t₁, which differs    │
+  │   from A·y by exactly c·t₀ — the part it cannot know.   │
+  │   The hint can absorb that difference only while it is  │
+  │   smaller than γ₂; beyond that, w₁ is unrecoverable.    │
+  │   Skipping this check would also leak t₀, which is      │
+  │   secret key material.                                  │
+  │                                                         │
+  │   This one almost never fires (≈2⁻²³ per attempt), so   │
+  │   it has its own test: tests/rejection_paths.rs.        │
+  └─────────────────────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────────────────────┐
+  │ CHECK 4:  Are there ≤ ω hint corrections?                │
   │                                                         │
   │   WHY: Hints tell the verifier where rounding errors    │
   │   changed the high bits. Too many hints → signature     │
@@ -338,6 +358,13 @@ The checks ensure the signature doesn't accidentally reveal the secret:
 **How often does retry happen?** About 75% of attempts fail the checks.
 So on average you need **~4 attempts** to produce one signature. Each attempt
 is fast (microseconds), so this is barely noticeable.
+
+**Do the checks leak timing?** The accept/reject decision is public — it is
+visible in how long signing takes. What must *not* leak is anything finer,
+such as *which* coefficient failed. This crate therefore scans every
+coefficient without an early exit and computes the hint bit with bit masks
+instead of short-circuiting `||`, unlike the C reference. See
+`examples/timing_check.rs`.
 
 ---
 

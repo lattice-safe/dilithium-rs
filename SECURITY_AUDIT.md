@@ -57,6 +57,7 @@ key validation.
 | R2-9 | Low | `to_bytes()` returned the plaintext secret key in a non-zeroizing `Vec` | ✅ Fixed |
 | R2-10 | Medium (assurance) | CI never *executed* the `simd` kernels — the crate's only `unsafe` code had zero executed test coverage | ✅ Fixed |
 | R2-11 | Info | `nonce + i` in the polyvec samplers was non-wrapping (debug-build panic path, unreachable in practice) | ✅ Fixed |
+| R2-12 | Low | The Keccak sponge state — seeded from `rho'`/`K` — could not be zeroized through the `sha3` API | ✅ Fixed (own SHAKE) |
 
 Verified as **not** vulnerable (see "Checked and found correct"): no memory
 unsafety, no reachable panic on attacker-controlled bytes across 34
@@ -143,8 +144,7 @@ buffers per iteration). They were left in freed heap memory, contradicting
 the crate's zeroization guarantee. All such buffers are now zeroized before
 going out of scope.
 
-Residual, documented: the `sha3` XOF reader state itself (a Keccak state
-derived from `rho'`) is not zeroizable through the `sha3` API.
+(The sponge state itself was the remaining gap; R2-12 closes it.)
 
 ### R2-4 — `serde` `Deserialize` bypassed validation (Medium)
 
@@ -222,6 +222,30 @@ therefore had zero executed coverage on either runner. CI now also runs
 kernels are exercised on the x86_64 runner and NEON on the macOS arm64 one —
 including the full 100-vector KAT suite through the SIMD path.
 
+### R2-12 — Keccak sponge state not zeroizable (Low)
+
+Every secret in Dilithium comes out of a SHAKE stream: `s1`/`s2` from `rho'`
+in key generation, the mask `y` from `rho'` on every signing iteration, and
+`rho'` itself from the long-term key `K`. The absorbed and permuted sponge
+state therefore holds secret-derived material, and the `sha3` crate (0.10)
+neither exposes nor wipes it — it has no `zeroize` feature, and its reader
+type is opaque. Zeroizing the *output* buffers, as R2-3 does, leaves the
+state itself behind.
+
+**Fix.** `src/shake.rs` implements the SHAKE128/SHAKE256 sponge directly on
+the `keccak` permutation — the same primitive `sha3` uses, and already a
+transitive dependency — with `Zeroize` and a `Drop` that wipes the 25-lane
+state unconditionally. `sha3` moves to a dev-dependency and the two
+implementations are compared in tests at and around every rate boundary
+(input and output lengths 0, 1, 2, 7, 8, 9, 63, 64, 65 and `rate·k ± 2` for
+`k = 1..3`, plus split absorbs and split squeezes, since the samplers top up
+one block at a time). The FIPS 204 KAT and NIST ACVP suites then exercise it
+end to end.
+
+Residual: the fast paths XOR and extract whole 8-byte lanes, so the sponge
+performs comparably to `sha3`; the benchmark table in the README was
+re-measured after the swap.
+
 ### R2-11 — Non-wrapping nonce arithmetic (Info)
 
 `nonce + i as u16` in `polyvecl_uniform_eta` / `polyvecl_uniform_gamma1` /
@@ -287,9 +311,11 @@ with `wrapping_add`.
   (fixed schedule), the SampleInBall shuffle index (from the public `c̃`),
   hint indices (public / attacker-supplied), and sequential writes in
   rejection sampling.
-- **Dependencies.** `sha3` 0.10.8, `sha2` 0.10.9, `zeroize` 1.8.2, `subtle`
-  2.6.1, `getrandom` 0.2.17, `serde` 1.0.228 — current, no open advisories,
-  no build scripts, no C bindings; `deny.toml` is schema-v2 correct.
+- **Dependencies.** `keccak` 0.1.6, `sha2` 0.10.9, `zeroize` 1.8.2, `subtle`
+  2.6.1, `getrandom` 0.2.17, `serde` 1.0.228, plus `sha3` 0.10.8 as a
+  dev-dependency for the SHAKE equivalence tests — current, no open
+  advisories, no build scripts, no C bindings; `deny.toml` is schema-v2
+  correct.
 
 ### Correction to Round 1
 
@@ -339,38 +365,180 @@ the wrapper's error path is now reachable and tested), and the entropy hook is
 public, which both makes the failure path testable and gives `no_std` targets
 a way to use hedged signing without `getrandom`.
 
+## Verification tooling added in this round
+
+| Artifact | What it does |
+|---|---|
+| `examples/exhaustive_proofs.rs` | Verifies the arithmetic layer over **complete finite domains** — every element of `Z_q` for `power2round`, `decompose` and `use_hint`; every reachable `a0 × a1` for `make_hint`; every coefficient value for each packer; the hint lemma the scheme rests on. ~250M cases in under a second (release). Negative controls confirm the sweeps detect deviations. |
+| `src/verification.rs` (Kani) | **Bounded model checking**: the same contracts discharged *symbolically*, plus absence of panics, overflow and out-of-bounds. Also proves the unpackers confine their output ranges for **arbitrary attacker-supplied bytes** — the property the NTT's overflow argument depends on. |
+| `examples/timing_check.rs` | **dudect-style timing measurement** of the two checks made branchless in this round, with the reference short-circuiting forms measured alongside as positive controls. |
+| `scripts/test-avx2-docker.sh` (see below) | Executes the AVX2 kernels under QEMU. |
+| `scripts/test-avx2-docker.sh` | Runs the suite with the AVX2 kernels actually executing (via QEMU under `--platform linux/amd64`), refusing to pass if AVX2 is unavailable. |
+| `tests/acvp_kat.rs` | Official NIST ACVP conformance vectors (see above). |
+
+### Kani results
+
+Thirteen harnesses discharge; each covers **every** input satisfying its
+assumptions, and Kani additionally proves absence of panics, arithmetic
+overflow and out-of-bounds access on those paths.
+
+| Harness | Property | Time |
+|---|---|---|
+| `proof_reduce32_bounds` | `r ≡ a (mod Q)`, `|r| ≤ 6283008` over the documented precondition | 0.8 s |
+| `proof_caddq_canonical` | maps `(-Q, Q)` to `[0, Q)` | 0.04 s |
+| `proof_freeze_canonical` | canonical representative over `reduce32`'s output range | 1.2 s |
+| `proof_montgomery_reduce_bound` | `|r| < Q` for every `zeta × coeff` the transform forms | 0.1 s |
+| `proof_power2round` | `a = a1·2^13 + a0`, `a0 ∈ (−2^12, 2^12]` | 0.06 s |
+| `proof_decompose_mode2` / `_mode3` | congruence and ranges, both γ₂ | 0.6 s / 0.3 s |
+| `proof_make_hint_matches_reference` | branchless form == reference truth table | 0.2 s |
+| `proof_use_hint_range` | output is always a valid high-bits value | 0.5 s |
+| `proof_chknorm_matches_definition` | matches `max|c| ≥ bound` (8 symbolic coefficients) | 3.8 s |
+| `proof_polyt1_unpack_range` | 10-bit output for **arbitrary** public-key bytes | 8.1 s |
+| `proof_polyeta_unpack_range` | bounded `s1`/`s2` for arbitrary secret-key bytes | 13.7 s |
+| `proof_polyz_unpack_range` | bounded `z` for arbitrary signature bytes | 26.7 s |
+
+The last three matter beyond hygiene: the NTT's overflow argument assumes the
+unpackers confine their outputs, and those bytes are attacker-supplied.
+
+One harness is **excluded** from the default run:
+`proof_montgomery_reduce_congruence` (`r·2^32 = a − t·Q`) rests on
+`Q · QINV ≡ 1 (mod 2^32)`, and bit-blasting a 32-bit multiplicative inverse
+did not converge (CBMC still running after five minutes with either solver).
+That property is covered instead by the exhaustive sweep over NTT-reachable
+products and by the bit-exact model in `scripts/algebra_check.py`.
+
+### Timing measurement results
+
+`cargo run --release --example timing_check`, on an idle Apple M1 Max,
+200,000 samples per class, three independent rounds per experiment
+(dudect convention: `|t| > 10` a leak, `4.5..10` inconclusive, below `4.5`
+no leak detected at this sample size):
+
+| Experiment | Shipped | Reference form (positive control) |
+|---|---|---|
+| `chknorm`: no violation vs. violation at coefficient 0 | worst \|t\| = 0.6 — no leak detected | \|t\| ≈ 16,600 — **leak detected** |
+| `chknorm`: violation at coefficient 0 vs. at 255 | worst \|t\| = 0.8 — no leak detected | \|t\| ≈ 15,600 — **leak detected** |
+| `make_hint`: `a0 > γ₂` vs. `a0 < −γ₂` | worst \|t\| = 1.6 — no leak detected | worst \|t\| = 10.0 — inconclusive |
+| `Poly::make_hint` over 256 coefficients, uniform signs | worst \|t\| = 1.7 — no leak detected | worst \|t\| = 1.0 — no leak detected |
+| `Poly::make_hint`, alternating signs (branch mispredicts) vs. uniform | worst \|t\| = 1.5 — no leak detected | worst \|t\| = 1.4 — no leak detected |
+
+Two things are worth reading carefully.
+
+**`chknorm` (R2-5) is confirmed fixed at the machine level.** The reference's
+early `return` is real control flow that no compiler can flatten, and the
+harness sees it enormously — including in the experiment that isolates the
+*position* of the offending coefficient, which is the part that leaks about
+secret rejected candidates rather than about the public accept/reject
+decision. The branchless version is indistinguishable from noise.
+
+**For `make_hint` (R2-6) the control does not fire, and the honest reading is
+that there was nothing to detect on this target.** Disassembling
+`make_hint_reference` (marked `#[inline(never)]` for exactly this purpose)
+shows LLVM already compiles `a0 > γ₂ || a0 < −γ₂ || (a0 == −γ₂ && a1 != 0)`
+into branchless aarch64 code:
+
+```text
+neg  w10, w0            ; -gamma2
+cmp  w1, w10
+ccmp w2, #0, #4, eq     ; a0 == -gamma2 && a1 != 0
+cset w11, ne
+cmp  w1, w10
+csel w9, w9, w11, lt    ; a0 < -gamma2
+cmp  w1, w0
+csel w0, w8, w9, gt     ; a0 > gamma2
+ret                     ; no conditional branch
+```
+
+So on this compiler and target the source-level short-circuit is already
+constant-time, and the masked version's value is that it does not *depend* on
+the optimizer making that choice — a different target, optimization level or
+compiler version may emit branches. This is a case where the fix is
+justified by robustness rather than by a measured leak, and it should be
+described that way.
+
+Methodology notes, since a timing harness is easy to get wrong: both classes
+go through the **same call site** (one closure, two inputs) — an earlier
+version of this harness used two closures and reported their code-layout
+differences as a `|t|` of 65; the sample buffers are faulted in before timing
+(first-touch page faults are a systematic per-class cost); the order of the
+two classes alternates every iteration; and each experiment runs three times
+because a single t-statistic wanders with frequency and thermal drift.
+
+### Note on fuzzing under AddressSanitizer
+
+`cargo fuzz` defaults to AddressSanitizer, and on this host (macOS 26,
+aarch64) the instrumented binary **deadlocks in ASan's initializer** before
+libFuzzer starts — `__malloc_init` → `AsanInitFromRtl` →
+`StaticSpinMutex::LockSlow`, spinning in `sched_yield` forever. A run that
+looks like a clean exit under a timeout has therefore executed **zero**
+inputs. Campaigns on this host must pass `--sanitizer=none` (libFuzzer still
+detects panics, hangs and OOM; it loses ASan's memory-error detection, which
+matters little for a crate whose only `unsafe` is the SIMD NTT). On Linux
+x86_64 — including CI and the Docker image — ASan works normally.
+
+Campaign run for this round (`--sanitizer=none`, 8 minutes per target on an
+idle M1 Max), **no crashes and no hangs**:
+
+| Target | Runs | exec/s | New corpus units |
+|---|---|---|---|
+| `fuzz_verify` | 307,984 | 640 | 122 |
+| `fuzz_unpack_sig` | 526,689,426 | 1,094,988 | 2 |
+| `fuzz_from_bytes` | 576,140,932 | 1,197,798 | 1 |
+| `fuzz_sign_verify` | 364,450 | 757 | 346 |
+
+Roughly 1.1 billion executions in total. The two slow targets are slow
+because each input runs a full key generation plus signing; the two fast ones
+only exercise decoding. Corpora were minimized (`cargo fuzz cmin`) before
+committing: 282 → 185 and 322 → 187 files for the two sign/verify targets.
+
 ## Reproducing this round
 
 ```sh
-cargo test --all-features                   # 142 tests
-cargo test --release --features simd        # AVX2 / NEON kernels + KATs
+cargo test --all-features                   # 154 tests
+cargo test --release --features simd        # NEON kernels + KATs
+./scripts/test-avx2-docker.sh               # AVX2 kernels under QEMU
 cargo llvm-cov --all-features \
   --fail-under-lines 100 --fail-under-regions 100 --fail-under-functions 100
+cargo run --release --example exhaustive_proofs   # exhaustive domain proofs
+cargo kani                                       # bounded model checking
+cargo run --release --example timing_check        # dudect timing measurement
 cargo clippy --all-targets --all-features -- -D warnings
 cargo deny check
+cargo semver-checks --baseline-version 0.3.0 --all-features
 python3 scripts/algebra_check.py src/ntt.rs # bit-exact arithmetic model
-cargo +nightly fuzz run fuzz_verify -- -max_total_time=300
+cargo +nightly fuzz run fuzz_verify -- -max_total_time=600
 cargo build --no-default-features --target thumbv7em-none-eabihf
 cargo build --no-default-features --features js --target wasm32-unknown-unknown
 ```
 
 ## Residual risk
 
-- **Not a certified module.** No CMVP validation. (Interoperability itself
-  is now covered: official NIST ACVP keyGen/sigGen/sigVer vectors are in the
-  test suite, including SHA-512 HashML-DSA.)
+- **Not a certified module.** No CMVP validation. (Interoperability itself is
+  covered: official NIST ACVP keyGen/sigGen/sigVer vectors are in the test
+  suite, including SHA-512 HashML-DSA.)
 - **Pre-hash support is SHA-512 only.** FIPS 204 also approves SHA-256,
   SHA3-224/256/384/512 and SHAKE-128/256 as pre-hash functions; ACVP vectors
   for those are skipped rather than failed.
-- **Source-level constant-time only.** The branchless forms were reviewed at
-  source level; LLVM is free to reintroduce branches. A `dudect`-style or
-  valgrind/ctgrind measurement on release binaries is the next step.
-- **XOF state not zeroizable.** The `sha3` reader state derived from `rho'`
-  outlives sampling (see R2-3).
-- **AVX2 kernels not executed in this session** (aarch64 host); they are now
-  exercised by CI on x86_64, and their lane algebra was verified with a
-  bit-exact model.
-- **No formal verification.**
+- **The constant-time evidence is statistical and target-specific.** The
+  measurement above found no leak in the shipped forms and a large one in the
+  reference `chknorm`, on this compiler and this CPU. "No leak detected"
+  bounds what 200,000 samples per class could see; it is not a proof, and
+  another target or optimization level may differ. No valgrind/ctgrind
+  instrumentation was run (valgrind is unavailable on aarch64 macOS; doing it
+  in the x86_64 container is the obvious next step).
+- **The scheme as a whole is not mechanically proven.** The arithmetic layer
+  is — symbolically by Kani and exhaustively over complete domains — but the
+  signing/verification protocol, the rejection-sampling argument and the
+  security reduction are not formalized. One Kani harness (the Montgomery
+  congruence) does not converge and is excluded.
+- **`chknorm`'s Kani harness is restricted** to eight symbolic coefficients;
+  the full `[i32; 256]` domain is out of reach for a bit-vector solver.
+- **AVX2 was executed only under QEMU emulation** (`--platform linux/amd64`)
+  and in CI, not on real x86_64 hardware in this session. Emulation exercises
+  the same instruction semantics, but not the microarchitectural behaviour.
+- **The fuzzing campaign ran without AddressSanitizer** on this host (see
+  above). Memory-error detection therefore rests on Rust's own guarantees
+  plus review of the SIMD `unsafe`, not on ASan.
 
 ---
 

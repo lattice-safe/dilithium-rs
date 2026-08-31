@@ -38,7 +38,10 @@ responsibly:
 - **Constant-time** signature verification via `subtle::ConstantTimeEq`
 - **Automatic zeroization** of private key material on drop (`zeroize`),
   including the SHAKE output buffers that carry `s1`/`s2` and the mask `y`,
-  the packing temporaries, and the pointwise accumulator
+  the packing temporaries, the pointwise accumulator, and the **Keccak sponge
+  state itself** (`src/shake.rs` implements SHAKE on the `keccak`
+  permutation so the state can be wiped; the `sha3` crate does not expose
+  it)
 - **Redacting `Debug`** — printing a key pair never emits private key bytes
 - **Validated key import** — `from_keys`, `from_bytes` and serde
   `Deserialize` all recompute `t = A·s1 + s2` and reject tampered secret keys
@@ -51,16 +54,19 @@ responsibly:
 - **Certified FIPS 204 module** — This implementation has not been submitted
   for CMVP validation. Do not use it where a certified module is required.
 - **Fully side-channel hardened signing** — The rejection-sampling *loop
-  count* is inherently data-dependent (as in every ML-DSA implementation),
-  and the `sha3` XOF state derived from `rho'` is not zeroizable through its
-  API. The per-coefficient checks that the C reference short-circuits are
+  count* is inherently data-dependent (as in every ML-DSA implementation).
+  The per-coefficient checks that the C reference short-circuits are
   branchless here: `chknorm` scans without early exit and `make_hint` is
   fully masked, so neither the position of an out-of-bound coefficient in a
   rejected candidate nor the sign of a secret `w0` coefficient is exposed.
   Constant-time properties were reviewed at source level only — compiler
   optimizations can alter them.
-- **Formal verification** — The implementation is a faithful port of the
-  C reference but has not been formally verified.
+- **A formal proof of the scheme** — The arithmetic layer *is* machine-checked
+  (Kani bounded model checking of the reduction, rounding and unpacking
+  contracts, plus exhaustive verification over complete finite domains — see
+  `src/verification.rs` and `examples/exhaustive_proofs.rs`), but the signing
+  and verification protocol as a whole is not mechanically proven, and the
+  security reduction is not formalized.
 - **Hardware-backed key storage** — Key material lives in process memory.
   Use HSMs or secure enclaves for high-value keys.
 
@@ -83,7 +89,7 @@ All dependencies are pure Rust with no C bindings:
 
 | Crate | Purpose |
 |-------|---------|
-| `sha3` | SHAKE-128/256, SHA3 |
+| `keccak` | Keccak-f\[1600\] permutation (the SHAKE sponge is in this crate, so its state can be zeroized) |
 | `sha2` | SHA-512 (HashML-DSA pre-hash) |
 | `subtle` | Constant-time comparison |
 | `zeroize` | Secure memory zeroing |

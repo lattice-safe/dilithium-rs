@@ -45,6 +45,15 @@ hardening findings; 100% region/line/function coverage.
   plaintext secret key is wiped on drop
 - **R2-11**: `nonce + i` in the polyvec samplers uses `wrapping_add`,
   matching the already-hardened outer nonce
+- **R2-12**: **the Keccak sponge state is now zeroized.** Every Dilithium
+  secret comes out of a SHAKE stream (`s1`/`s2` and the mask `y` from `rho'`,
+  and `rho'` from the long-term key `K`), so the absorbed and permuted state
+  holds secret-derived material — and `sha3` 0.10 neither exposes nor wipes
+  it. `src/shake.rs` implements the SHAKE128/256 sponge on the `keccak`
+  permutation (the same primitive `sha3` uses) with `Zeroize` and a `Drop`
+  that clears the state. `sha3` becomes a dev-dependency and the two
+  implementations are compared at and around every rate boundary, including
+  split absorbs and split squeezes
 
 ### Added
 - `DilithiumKeyPair::generate_with_rng`, `sign_with_rng`,
@@ -65,6 +74,27 @@ hardening findings; 100% region/line/function coverage.
   verification no longer clones three whole polynomial vectors
 - `symmetric::XofStream` — lets the rejection-sampling refill paths be driven
   by a test stream
+- `examples/exhaustive_proofs.rs`: verifies the arithmetic layer over
+  **complete finite domains** — every element of `Z_q` for `power2round`,
+  `decompose` and `use_hint`, every reachable `(a0, a1)` for `make_hint`,
+  every coefficient value for each packer, plus the hint lemma the scheme
+  rests on. ~250M cases in under a second (release); negative controls
+  confirm the sweeps detect deviations
+- `src/verification.rs`: **Kani proof harnesses** (bounded model checking,
+  `cfg(kani)` only) for the reduction/rounding contracts and for the
+  unpackers' output ranges on arbitrary attacker-supplied bytes — the
+  property the NTT's overflow argument depends on. Also proves absence of
+  panics, overflow and out-of-bounds along the way
+- `examples/timing_check.rs`: dudect-style timing measurement of the two
+  checks made branchless in this release, with the reference
+  short-circuiting forms measured alongside as positive controls
+- `fuzz/README.md`: documents that `cargo fuzz` must be run with
+  `--sanitizer=none` on macOS 26 / aarch64, where the ASan-instrumented
+  binary deadlocks in ASan's initializer before libFuzzer starts — a run that
+  appears to exit cleanly under a timeout has executed zero inputs
+- `scripts/test-avx2-docker.sh`: runs the suite with the AVX2 kernels
+  actually executing (QEMU via `--platform linux/amd64`), and fails rather
+  than silently falling back if AVX2 is unavailable
 - `tests/acvp_kat.rs` (5 tests) with `tests/data/acvp_ml_dsa.json`: **official
   NIST ACVP vectors** — 75 `keyGen`, 12 pure `sigGen` (deterministic, context
   0–245 bytes), SHA-512 HashML-DSA `sigGen` (deterministic byte-for-byte) and
@@ -85,6 +115,9 @@ hardening findings; 100% region/line/function coverage.
   `reduce32`'s input bound
 
 ### Changed
+- `sha3` moves from a runtime dependency to a dev-dependency; `keccak` is the
+  new runtime dependency (see R2-12). The public `symmetric` API is unchanged
+- CI gains an exhaustive-proofs job and a Kani formal-verification job
 - Benchmarks re-measured on an idle machine with a matched C harness, and the
   signing benchmark now **varies the message per iteration**. With a fixed
   `(sk, msg, rnd)` the rejection loop is deterministic, so the old figures

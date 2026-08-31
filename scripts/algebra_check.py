@@ -107,7 +107,66 @@ for gamma2, m in [((Q - 1) // 32, 16), ((Q - 1) // 88, 44)]:
           ok, f"case={bad}")
 
 def make_hint(a0, a1, gamma2):
+    """Reference form, as written in the C implementation."""
     return a0 > gamma2 or a0 < -gamma2 or (a0 == -gamma2 and a1 != 0)
+
+def make_hint_masked(a0, a1, gamma2):
+    """Bit-exact model of the branchless rounding.rs::make_hint.
+
+    The Rust version avoids the reference's `||`/`&&` short-circuits, which
+    branch on the secret w0 (they distinguish a0 > gamma2 from a0 < -gamma2,
+    i.e. the sign of a secret coefficient). Modelled here with the same
+    wrapping i32 / logical-u32-shift semantics as the Rust code.
+    """
+    gt = ((i32(gamma2 - a0) & 0xFFFFFFFF) >> 31) & 1
+    s = i32(a0 + gamma2)
+    lt = ((s & 0xFFFFFFFF) >> 31) & 1
+    is_neg_gamma2 = ((((s | i32(-s)) & 0xFFFFFFFF) >> 31) & 1) ^ 1
+    a1_nonzero = (((a1 | i32(-a1)) & 0xFFFFFFFF) >> 31) & 1
+    return (gt | lt | (is_neg_gamma2 & a1_nonzero)) != 0
+
+# The masked form must have exactly the reference truth table, including at
+# the a0 == -gamma2 boundary where the result depends on a1.
+for gamma2 in ((Q - 1) // 32, (Q - 1) // 88):
+    ok = True
+    bad = None
+    a0s = set([0, 1, -1, gamma2, gamma2 + 1, gamma2 - 1, -gamma2, -gamma2 + 1,
+               -gamma2 - 1, 2 * gamma2, -2 * gamma2, 6283008, -6283008])
+    a0s.update(range(-3 * gamma2, 3 * gamma2, gamma2 // 501 + 1))
+    for a0 in sorted(a0s):
+        for a1 in (0, 1, -1, 15, 43, 44):
+            if make_hint_masked(a0, a1, gamma2) != make_hint(a0, a1, gamma2):
+                ok = False; bad = (a0, a1); break
+        if not ok:
+            break
+    check(f"make_hint branchless == reference truth table (gamma2={gamma2})",
+          ok, f"case={bad}")
+
+# Branchless chknorm: the mask ((bound-1-t) >> 31) & 1 must be 1 exactly when
+# t >= bound, for every |coefficient| the callers can produce.
+ok = True
+bad = None
+for bound in (1, 2, 78, 95232, 130994, 524092, 261692, (Q - 1) // 8):
+    for t in set([0, 1, bound - 1, bound, bound + 1, 6283008] +
+                 [random.randint(0, 6283008) for _ in range(2000)]):
+        want = t >= bound
+        got = ((i32(bound - 1 - t) >> 31) & 1) != 0
+        if want != got:
+            ok = False; bad = (bound, t); break
+    if not ok:
+        break
+check("chknorm mask: ((bound-1-|c|)>>31)&1 == (|c| >= bound)", ok, f"case={bad}")
+
+# Branchless absolute value used by chknorm (wrapping, as in the Rust code).
+ok = True
+bad = None
+for c in set([0, 1, -1, 6283008, -6283008, Q, -Q] +
+             [random.randint(-6283008, 6283008) for _ in range(20000)]):
+    sign = asr31(c)
+    got = i32(c - i32(sign & i32(c * 2)))
+    if got != abs(c):
+        ok = False; bad = (c, got); break
+check("chknorm abs: c - ((c>>31) & 2c) == |c| (wrapping i32)", ok, f"case={bad}")
 
 def use_hint(a, hint, gamma2):
     a1, a0 = decompose(a, gamma2)

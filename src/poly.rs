@@ -4,11 +4,12 @@
 //! Central type: `Poly` with N=256 coefficients in `Z_Q`.
 
 use alloc::vec;
+use zeroize::Zeroize;
 
 use crate::params::*;
 use crate::reduce::{caddq, montgomery_reduce, reduce32};
 use crate::rounding;
-use crate::symmetric::{Stream128, Stream256};
+use crate::symmetric::{Stream128, Stream256, XofStream};
 
 /// Stream block sizes matching SHAKE rates.
 const STREAM128_BLOCKBYTES: usize = 168; // SHAKE128_RATE
@@ -136,6 +137,15 @@ impl Poly {
         }
     }
 
+    /// In-place pointwise multiplication: `r = a * r` (NTT domain).
+    ///
+    /// Avoids the caller having to clone `r`.
+    pub fn pointwise_montgomery_assign(r: &mut Poly, a: &Poly) {
+        for i in 0..N {
+            r.coeffs[i] = montgomery_reduce(a.coeffs[i] as i64 * r.coeffs[i] as i64);
+        }
+    }
+
     // ================================================================
     // Rounding wrappers
     // ================================================================
@@ -175,22 +185,43 @@ impl Poly {
         }
     }
 
+    /// In-place hint application: `r = UseHint(h, r)`.
+    ///
+    /// Avoids the caller having to clone `r`.
+    pub fn use_hint_assign(mode: DilithiumMode, r: &mut Poly, h: &Poly) {
+        for i in 0..N {
+            r.coeffs[i] = rounding::use_hint(mode, r.coeffs[i], h.coeffs[i] != 0);
+        }
+    }
+
     /// Check infinity norm against bound B.
     /// Returns `true` if norm >= B (i.e., check fails).
+    ///
+    /// # Constant time
+    ///
+    /// The scan is unconditional: unlike the C reference (which returns on
+    /// the first out-of-bound coefficient), the running time does not depend
+    /// on *which* coefficient — or how many — violate the bound. During
+    /// signing this function is applied to the secret rejection candidates
+    /// `z = y + c*s1`, `w0 - c*s2` and `c*t0`; the accept/reject decision is
+    /// public, but the position of the first large coefficient is not.
+    ///
+    /// The `bound > (Q-1)/8` guard branches only on a public mode constant.
     #[must_use]
     pub fn chknorm(&self, bound: i32) -> bool {
         if bound > (Q - 1) / 8 {
             return true;
         }
+        let mut fail = 0i32;
         for i in 0..N {
-            // Absolute value (handle Q/2 boundary)
-            let mut t = self.coeffs[i] >> 31;
-            t = self.coeffs[i] - (t & (2 * self.coeffs[i]));
-            if t >= bound {
-                return true;
-            }
+            let c = self.coeffs[i];
+            // Branchless absolute value (handles the Q/2 boundary).
+            let sign = c >> 31;
+            let t = c.wrapping_sub(sign & c.wrapping_mul(2));
+            // 1 iff t >= bound, i.e. iff bound - 1 - t is negative.
+            fail |= ((bound.wrapping_sub(1).wrapping_sub(t)) >> 31) & 1;
         }
-        false
+        fail != 0
     }
 
     // ================================================================
@@ -221,15 +252,25 @@ impl Poly {
     }
 
     /// Sample polynomial with uniformly random coefficients in [0, Q-1]
-    /// via rejection sampling on output of SHAKE128.
+    /// via rejection sampling on output of SHAKE128 (FIPS 204 `RejNTTPoly`).
     pub fn uniform(a: &mut Poly, seed: &[u8; SEEDBYTES], nonce: u16) {
-        const NBLOCKS: usize = 768_usize.div_ceil(STREAM128_BLOCKBYTES);
-
         let mut stream = Stream128::init(seed, nonce);
-        let mut buf = [0u8; NBLOCKS * STREAM128_BLOCKBYTES + 2];
-        stream.squeeze(&mut buf[..NBLOCKS * STREAM128_BLOCKBYTES]);
+        Self::uniform_from_stream(a, &mut stream);
+    }
 
-        let mut ctr = Self::rej_uniform(&mut a.coeffs[..N], &buf[..NBLOCKS * STREAM128_BLOCKBYTES]);
+    /// `uniform` driven by an arbitrary XOF, so the refill path can be tested.
+    ///
+    /// Both 840 (the initial squeeze) and 168 (each refill) are multiples of
+    /// 3, so no partial 3-byte group is ever straddled and the C reference's
+    /// leftover-carry bookkeeping is unnecessary.
+    pub fn uniform_from_stream<S: XofStream>(a: &mut Poly, stream: &mut S) {
+        const NBLOCKS: usize = 768_usize.div_ceil(STREAM128_BLOCKBYTES);
+        const BUFLEN: usize = NBLOCKS * STREAM128_BLOCKBYTES;
+
+        let mut buf = [0u8; BUFLEN];
+        stream.squeeze(&mut buf);
+
+        let mut ctr = Self::rej_uniform(&mut a.coeffs[..N], &buf);
 
         while ctr < N {
             let mut tmp = [0u8; STREAM128_BLOCKBYTES];
@@ -284,26 +325,44 @@ impl Poly {
 
     /// Sample polynomial with coefficients in [-ETA, ETA] via SHAKE256.
     pub fn uniform_eta(mode: DilithiumMode, a: &mut Poly, seed: &[u8; CRHBYTES], nonce: u16) {
+        let mut stream = Stream256::init(seed, nonce);
+        Self::uniform_eta_from_stream(mode, a, &mut stream);
+    }
+
+    /// `uniform_eta` driven by an arbitrary XOF, so the refill path can be
+    /// tested.
+    ///
+    /// The squeezed bytes *are* secret key material (`s1`, `s2`), so every
+    /// buffer is zeroized before it goes out of scope.
+    pub fn uniform_eta_from_stream<S: XofStream>(
+        mode: DilithiumMode,
+        a: &mut Poly,
+        stream: &mut S,
+    ) {
         let nblocks = if mode.eta() == 2 {
             136_usize.div_ceil(STREAM256_BLOCKBYTES)
         } else {
             227_usize.div_ceil(STREAM256_BLOCKBYTES)
         };
 
-        let mut stream = Stream256::init(seed, nonce);
         let mut buf = vec![0u8; nblocks * STREAM256_BLOCKBYTES];
         stream.squeeze(&mut buf);
 
         let mut ctr = Self::rej_eta(mode, &mut a.coeffs[..N], &buf);
+        buf.zeroize();
         while ctr < N {
             let mut tmp = [0u8; STREAM256_BLOCKBYTES];
             stream.squeeze(&mut tmp);
             ctr += Self::rej_eta(mode, &mut a.coeffs[ctr..N], &tmp);
+            tmp.zeroize();
         }
     }
 
     /// Sample polynomial with coefficients in [-(GAMMA1-1), GAMMA1]
     /// by unpacking SHAKE256 stream output.
+    ///
+    /// The squeezed bytes are the packed form of the secret mask `y`, so the
+    /// buffer is zeroized before it goes out of scope.
     pub fn uniform_gamma1(mode: DilithiumMode, a: &mut Poly, seed: &[u8; CRHBYTES], nonce: u16) {
         let polyz_packed = mode.polyz_packedbytes();
         let nblocks = polyz_packed.div_ceil(STREAM256_BLOCKBYTES);
@@ -313,6 +372,7 @@ impl Poly {
         stream.squeeze(&mut buf);
 
         Self::polyz_unpack(mode, a, &buf);
+        buf.zeroize();
     }
 
     /// Sample challenge polynomial with TAU nonzero coefficients in {-1, 1}
@@ -363,6 +423,7 @@ impl Poly {
                 r[3 * i + 0] = t[0] | (t[1] << 3) | (t[2] << 6);
                 r[3 * i + 1] = (t[2] >> 2) | (t[3] << 1) | (t[4] << 4) | (t[5] << 7);
                 r[3 * i + 2] = (t[5] >> 1) | (t[6] << 2) | (t[7] << 5);
+                t.zeroize(); // holds secret s1/s2 coefficients
             }
         } else {
             // eta == 4
@@ -456,6 +517,7 @@ impl Poly {
             r[13 * i + 11] |= (t[7] << 3) as u8;
             r[13 * i + 12] = (t[7] >> 5) as u8;
         }
+        t.zeroize(); // holds secret t0 coefficients
     }
 
     /// Unpack t0 polynomial (13-bit coefficients).
@@ -680,6 +742,150 @@ mod tests {
             let mut b = Poly::zero();
             Poly::polyz_unpack(mode, &mut b, &buf);
             assert_eq!(a.coeffs, b.coeffs, "polyz roundtrip failed for {:?}", mode);
+        }
+    }
+
+    /// A stream whose first block is entirely `0xFF`: every 3-byte group
+    /// masks to `0x7FFFFF >= Q`, so all 280 candidates are rejected and the
+    /// refill loop in `uniform_from_stream` must run. That loop is
+    /// unreachable in practice (p < 2^-100 with a real XOF) yet it is the
+    /// path that keeps `RejNTTPoly` correct, so it is tested explicitly.
+    struct RejectFirstBlock {
+        emitted_rejects: bool,
+        tail: alloc::vec::Vec<u8>,
+        pos: usize,
+    }
+
+    impl RejectFirstBlock {
+        fn new(tail_len: usize) -> Self {
+            // Deterministic pseudorandom tail whose first group is 0x7FFFFF
+            // (>= Q, rejected) so both arms of the acceptance test run.
+            let mut tail = alloc::vec::Vec::with_capacity(tail_len);
+            tail.extend_from_slice(&[0xFF, 0xFF, 0xFF]);
+            let mut x: u32 = 0x1234_5678;
+            for _ in 3..tail_len {
+                x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                tail.push((x >> 16) as u8);
+            }
+            Self {
+                emitted_rejects: false,
+                tail,
+                pos: 0,
+            }
+        }
+    }
+
+    impl crate::symmetric::XofStream for RejectFirstBlock {
+        fn squeeze(&mut self, out: &mut [u8]) {
+            if !self.emitted_rejects {
+                self.emitted_rejects = true;
+                out.fill(0xFF);
+                return;
+            }
+            for b in out.iter_mut() {
+                *b = self.tail[self.pos % self.tail.len()];
+                self.pos += 1;
+            }
+        }
+    }
+
+    #[test]
+    fn test_rej_uniform_rejects_out_of_range_candidates() {
+        // 0x7FFFFF (all bits of the 23-bit window set) is >= Q.
+        let buf = [0xFFu8; 30];
+        let mut a = [0i32; 10];
+        assert_eq!(Poly::rej_uniform(&mut a, &buf), 0);
+        // A short buffer cannot complete a 3-byte group.
+        assert_eq!(Poly::rej_uniform(&mut a, &[0u8; 2]), 0);
+    }
+
+    #[test]
+    fn test_uniform_from_stream_refills_when_first_block_all_rejected() {
+        let mut a = Poly::zero();
+        let mut stream = RejectFirstBlock::new(4096);
+        Poly::uniform_from_stream(&mut a, &mut stream);
+
+        // Every coefficient must be a valid field element in [0, Q-1].
+        assert!(a.coeffs.iter().all(|c| (0..Q).contains(c)));
+
+        // Independently recompute the expected coefficients from the same
+        // byte stream: the first (all-0xFF) block yields nothing, and every
+        // refill block is a multiple of 3 bytes, so the accepted values are
+        // exactly the in-range 23-bit groups of the concatenated tail.
+        let mut expected = alloc::vec::Vec::new();
+        {
+            use crate::symmetric::XofStream;
+            let mut feed = RejectFirstBlock::new(4096);
+            let mut first = [0u8; 840];
+            feed.squeeze(&mut first);
+            while expected.len() < N {
+                let mut block = [0u8; STREAM128_BLOCKBYTES];
+                feed.squeeze(&mut block);
+                for chunk in block.chunks_exact(3) {
+                    let t = (chunk[0] as u32 | (chunk[1] as u32) << 8 | (chunk[2] as u32) << 16)
+                        & 0x7FFFFF;
+                    if t < Q as u32 {
+                        expected.push(t as i32);
+                    }
+                }
+            }
+            expected.truncate(N);
+        }
+        assert_eq!(&a.coeffs[..], &expected[..]);
+    }
+
+    #[test]
+    fn test_uniform_eta_from_stream_refills() {
+        // One SHAKE256 block is 136 bytes = 272 half-byte candidates; with
+        // eta=2 only values < 15 are accepted, so a block of 0xFF nibbles
+        // (15) is fully rejected and forces the refill path.
+        struct AllFifteenThenReal {
+            first: bool,
+            x: u32,
+        }
+        impl crate::symmetric::XofStream for AllFifteenThenReal {
+            fn squeeze(&mut self, out: &mut [u8]) {
+                if self.first {
+                    self.first = false;
+                    out.fill(0xFF); // both nibbles = 15 -> always rejected
+                    return;
+                }
+                for b in out.iter_mut() {
+                    self.x = self.x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    *b = (self.x >> 16) as u8;
+                }
+            }
+        }
+
+        for mode in [DilithiumMode::Dilithium2, DilithiumMode::Dilithium3] {
+            let eta = mode.eta();
+            let mut a = Poly::zero();
+            let mut stream = AllFifteenThenReal { first: true, x: 7 };
+            Poly::uniform_eta_from_stream(mode, &mut a, &mut stream);
+            assert!(a.coeffs.iter().all(|c| c.abs() <= eta));
+        }
+    }
+
+    #[test]
+    fn test_chknorm_rejects_oversized_bound() {
+        // A bound above (Q-1)/8 is always reported as a failure.
+        let a = Poly::zero();
+        assert!(a.chknorm((Q - 1) / 8 + 1));
+        assert!(!a.chknorm((Q - 1) / 8));
+    }
+
+    #[test]
+    fn test_chknorm_is_position_independent() {
+        // The branchless scan must flag a violation wherever it sits.
+        for pos in [0usize, 1, 127, 255] {
+            let mut a = Poly::zero();
+            a.coeffs[pos] = 1000;
+            assert!(a.chknorm(1000));
+            assert!(!a.chknorm(1001));
+            let mut b = Poly::zero();
+            b.coeffs[pos] = -1000;
+            assert!(b.chknorm(1000));
+            assert!(!b.chknorm(1001));
         }
     }
 

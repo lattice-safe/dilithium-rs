@@ -8,8 +8,15 @@
 //! - **FIPS 204 compliant** — supports pure ML-DSA and HashML-DSA (pre-hash)
 //! - **`no_std` compatible** — works on embedded and WASM targets
 //! - **WASM ready** — enable the `js` feature for browser environments
-//! - **Zeroize** — private key material is automatically zeroized on drop
-//! - **Constant-time** — verification uses constant-time comparison
+//! - **Zeroize** — private key material, sampling buffers and packing
+//!   temporaries are zeroized; `Debug` redacts the private key
+//! - **Constant-time** — constant-time challenge comparison in verification,
+//!   plus branchless norm and hint checks in signing (stronger than the C
+//!   reference, which short-circuits both)
+//! - **Bring your own RNG** — `generate_with_rng` / `sign_with_rng` work
+//!   without `getrandom`, for `no_std` targets with their own entropy source
+//! - **Validated key import** — `from_keys`, `from_bytes` and serde
+//!   `Deserialize` recompute `t = A·s1 + s2` and reject tampered secret keys
 //! - **Optional serde** — enable the `serde` feature for serialization
 //! - **SIMD acceleration** — AVX2 (x86_64) and NEON (AArch64) NTT behind `simd`
 //!

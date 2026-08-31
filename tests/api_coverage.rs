@@ -622,3 +622,95 @@ fn test_shake256_state_matches_oneshot() {
     shake256(&mut out2, b"hello world");
     assert_eq!(out1, out2);
 }
+
+// ================================================================
+// Caller-supplied entropy (bring-your-own-RNG)
+// ================================================================
+
+/// A failing entropy source must yield `RandomError` and never a key or a
+/// signature: FIPS 204 hedged signing requires fresh randomness, so silently
+/// falling back to a zero `rnd` would be a security bug.
+#[test]
+fn test_with_rng_reports_failure() {
+    let mut failing = |_b: &mut [u8]| Err(());
+
+    assert_eq!(
+        DilithiumKeyPair::generate_with_rng(DilithiumMode::Dilithium2, &mut failing).unwrap_err(),
+        DilithiumError::RandomError
+    );
+
+    let kp = DilithiumKeyPair::generate_deterministic(DilithiumMode::Dilithium2, &[21u8; 32]);
+    assert_eq!(
+        kp.sign_with_rng(b"m", b"", &mut failing).unwrap_err(),
+        DilithiumError::RandomError
+    );
+    assert_eq!(
+        kp.sign_prehash_with_rng(b"m", b"", &mut failing)
+            .unwrap_err(),
+        DilithiumError::RandomError
+    );
+}
+
+/// A stateful entropy source works (the reason the hook takes `&mut dyn
+/// FnMut` rather than a bare function pointer), and its output is actually
+/// used: two different `rnd` values give two different signatures.
+#[test]
+fn test_with_rng_uses_supplied_bytes() {
+    let mut counter = 0u8;
+    let mut stateful = |b: &mut [u8]| {
+        counter = counter.wrapping_add(1);
+        b.fill(counter);
+        Ok(())
+    };
+
+    let kp = DilithiumKeyPair::generate_with_rng(DilithiumMode::Dilithium2, &mut stateful).unwrap();
+    let sig1 = kp.sign_with_rng(b"m", b"c", &mut stateful).unwrap();
+    let sig2 = kp.sign_with_rng(b"m", b"c", &mut stateful).unwrap();
+    assert_ne!(sig1.as_bytes(), sig2.as_bytes());
+    for sig in [&sig1, &sig2] {
+        assert!(DilithiumKeyPair::verify(
+            kp.public_key(),
+            sig,
+            b"m",
+            b"c",
+            DilithiumMode::Dilithium2
+        ));
+    }
+
+    let psig = kp.sign_prehash_with_rng(b"m", b"c", &mut stateful).unwrap();
+    assert!(DilithiumKeyPair::verify_prehash(
+        kp.public_key(),
+        &psig,
+        b"m",
+        b"c",
+        DilithiumMode::Dilithium2
+    ));
+}
+
+/// The FIPS 204 `|ctx| <= 255` limit is enforced on every signing entry
+/// point, including the BYO-RNG ones.
+#[test]
+fn test_with_rng_rejects_oversized_context() {
+    let kp = DilithiumKeyPair::generate_deterministic(DilithiumMode::Dilithium2, &[22u8; 32]);
+    let long_ctx = vec![0u8; 256];
+    let mut ok_rng = |b: &mut [u8]| {
+        b.fill(3);
+        Ok(())
+    };
+
+    assert_eq!(
+        kp.sign_with_rng(b"m", &long_ctx, &mut ok_rng).unwrap_err(),
+        DilithiumError::BadArgument
+    );
+    assert_eq!(
+        kp.sign_prehash_with_rng(b"m", &long_ctx, &mut ok_rng)
+            .unwrap_err(),
+        DilithiumError::BadArgument
+    );
+    // A 255-byte context is still accepted.
+    let max_ctx = vec![0u8; 255];
+    assert!(kp.sign_with_rng(b"m", &max_ctx, &mut ok_rng).is_ok());
+    assert!(kp
+        .sign_prehash_with_rng(b"m", &max_ctx, &mut ok_rng)
+        .is_ok());
+}

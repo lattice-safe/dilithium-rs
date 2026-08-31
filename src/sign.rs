@@ -153,6 +153,12 @@ pub fn sign_signature_internal(
     let mut w0 = PolyVecK::default();
     let mut cp = Poly::zero();
 
+    // Public per-iteration scratch, also hoisted: previously these three
+    // buffers were heap-allocated afresh on every rejection.
+    let mut w1_high = PolyVecK::default();
+    let mut w1_packed = vec![0u8; k * mode.polyw1_packedbytes()];
+    let mut ctilde_buf = vec![0u8; mode.ctildebytes()];
+
     let siglen = loop {
         // Sample intermediate vector y
         polyvecl_uniform_gamma1(mode, &mut y, &rhoprime, nonce);
@@ -170,14 +176,10 @@ pub fn sign_signature_internal(
 
         // Decompose w
         polyveck_caddq(mode, &mut w);
-        let mut w1_high = PolyVecK::default();
         polyveck_decompose(mode, &mut w1_high, &mut w0, &w);
-        let mut w1_packed = vec![0u8; k * mode.polyw1_packedbytes()];
         polyveck_pack_w1(mode, &mut w1_packed, &w1_high);
 
         // Compute challenge
-        let ctilde = mode.ctildebytes();
-        let mut ctilde_buf = vec![0u8; ctilde];
         shake256_multi(&mut ctilde_buf, &[&mu, &w1_packed]);
 
         Poly::challenge(mode, &mut cp, &ctilde_buf);
@@ -364,18 +366,15 @@ pub fn verify_internal(mode: DilithiumMode, sig: &[u8], m: &[u8], pre: &[u8], pk
     cp.ntt();
     polyveck_shiftl(mode, &mut t1);
     polyveck_ntt(mode, &mut t1);
-    let t1_clone = t1.clone();
-    polyveck_pointwise_poly_montgomery(mode, &mut t1, &cp, &t1_clone);
+    polyveck_pointwise_poly_montgomery_assign(mode, &mut t1, &cp);
 
-    let w1_copy = w1.clone();
-    polyveck_sub(mode, &mut w1, &w1_copy, &t1);
+    polyveck_sub_assign(mode, &mut w1, &t1);
     polyveck_reduce(mode, &mut w1);
     polyveck_invntt_tomont(mode, &mut w1);
 
     // Reconstruct w1 using hint
     polyveck_caddq(mode, &mut w1);
-    let w1_copy2 = w1.clone();
-    polyveck_use_hint(mode, &mut w1, &w1_copy2, &h);
+    polyveck_use_hint_assign(mode, &mut w1, &h);
     let mut buf = vec![0u8; k * mode.polyw1_packedbytes()];
     polyveck_pack_w1(mode, &mut buf, &w1);
 

@@ -79,20 +79,66 @@ impl std::error::Error for DilithiumError {}
 /// [`public_key_bytes`](Self::public_key_bytes) when only the public half
 /// is needed.
 ///
+/// `Deserialize` runs the full [`from_keys`](Self::from_keys) validation
+/// (FIPS 204 §7.1), so a deserialized key pair satisfies the same
+/// invariants as one built through a constructor. That costs roughly one
+/// key generation per deserialization.
+///
 /// Type aliases: `MlDsaKeyPair` (FIPS 204 naming) = `DilithiumKeyPair` (legacy).
-#[derive(Debug, Clone)]
+///
+/// # `Debug`
+///
+/// The `Debug` implementation deliberately **redacts the private key**; it
+/// prints only the mode and the key lengths, so logging a key pair cannot
+/// leak secret material.
+#[derive(Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "KeyPairRepr"))]
 pub struct DilithiumKeyPair {
     #[cfg_attr(
         feature = "serde",
-        serde(
-            serialize_with = "serde_zeroizing::serialize",
-            deserialize_with = "serde_zeroizing::deserialize"
-        )
+        serde(serialize_with = "serde_zeroizing::serialize")
     )]
     privkey: Zeroizing<Vec<u8>>,
     pubkey: Vec<u8>,
     mode: DilithiumMode,
+}
+
+impl fmt::Debug for DilithiumKeyPair {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DilithiumKeyPair")
+            .field("mode", &self.mode)
+            .field("privkey", &"[REDACTED]")
+            .field("privkey_len", &self.privkey.len())
+            .field("pubkey_len", &self.pubkey.len())
+            .finish()
+    }
+}
+
+/// Wire representation used **only** as the `serde` deserialization target.
+///
+/// Deserializing straight into [`DilithiumKeyPair`] would bypass every
+/// constructor check, so the derived `Deserialize` goes through this struct
+/// and then [`DilithiumKeyPair::from_keys`], applying the same FIPS 204 §7.1
+/// validation as [`DilithiumKeyPair::from_bytes`].
+#[cfg(feature = "serde")]
+#[derive(serde::Deserialize)]
+struct KeyPairRepr {
+    #[serde(deserialize_with = "serde_zeroizing::deserialize")]
+    privkey: Zeroizing<Vec<u8>>,
+    pubkey: Vec<u8>,
+    mode: DilithiumMode,
+}
+
+#[cfg(feature = "serde")]
+impl TryFrom<KeyPairRepr> for DilithiumKeyPair {
+    type Error = DilithiumError;
+
+    fn try_from(repr: KeyPairRepr) -> Result<Self, Self::Error> {
+        // `from_keys` copies what it needs; `repr.privkey` is zeroized when
+        // it is dropped at the end of this function.
+        Self::from_keys(&repr.privkey, &repr.pubkey, repr.mode)
+    }
 }
 
 /// Helper module for serde on `Zeroizing<Vec<u8>>`.
@@ -132,8 +178,25 @@ impl DilithiumKeyPair {
     /// Requires the `std` or `getrandom` feature (enabled by default).
     #[cfg(feature = "getrandom")]
     pub fn generate(mode: DilithiumMode) -> Result<Self, DilithiumError> {
+        Self::generate_with_rng(mode, &mut |buf| getrandom(buf))
+    }
+
+    /// Generate a key pair from a caller-supplied entropy source.
+    ///
+    /// `fill` must fill the whole buffer with cryptographically secure random
+    /// bytes and return `Err(())` if it cannot; that becomes
+    /// [`DilithiumError::RandomError`] and **no** key pair is produced. This
+    /// is the entry point for `no_std` targets that have an entropy source
+    /// but not `getrandom`.
+    ///
+    /// Dynamic dispatch (`&mut dyn FnMut`) is deliberate: it accepts stateful
+    /// RNGs and keeps this function from being duplicated per closure type.
+    pub fn generate_with_rng(
+        mode: DilithiumMode,
+        fill: &mut dyn FnMut(&mut [u8]) -> Result<(), ()>,
+    ) -> Result<Self, DilithiumError> {
         let mut seed = [0u8; SEEDBYTES];
-        getrandom(&mut seed).map_err(|()| DilithiumError::RandomError)?;
+        fill(&mut seed).map_err(|()| DilithiumError::RandomError)?;
         let result = Self::generate_deterministic(mode, &seed);
         seed.zeroize();
         Ok(result)
@@ -156,12 +219,23 @@ impl DilithiumKeyPair {
     /// Requires the `std` or `getrandom` feature for randomized signing.
     #[cfg(feature = "getrandom")]
     pub fn sign(&self, msg: &[u8], ctx: &[u8]) -> Result<DilithiumSignature, DilithiumError> {
-        if ctx.len() > 255 {
-            return Err(DilithiumError::BadArgument);
-        }
+        self.sign_with_rng(msg, ctx, &mut |buf| getrandom(buf))
+    }
 
+    /// Hedged pure ML-DSA signing with a caller-supplied entropy source.
+    ///
+    /// See [`generate_with_rng`](Self::generate_with_rng) for the `fill`
+    /// contract. The FIPS 204 `|ctx| <= 255` limit is enforced by
+    /// [`sign::sign_signature`], which reports it as
+    /// [`DilithiumError::BadArgument`].
+    pub fn sign_with_rng(
+        &self,
+        msg: &[u8],
+        ctx: &[u8],
+        fill: &mut dyn FnMut(&mut [u8]) -> Result<(), ()>,
+    ) -> Result<DilithiumSignature, DilithiumError> {
         let mut rnd = [0u8; RNDBYTES];
-        getrandom(&mut rnd).map_err(|()| DilithiumError::RandomError)?;
+        fill(&mut rnd).map_err(|()| DilithiumError::RandomError)?;
 
         let mut sig = vec![0u8; self.mode.signature_bytes()];
         let ret = sign::sign_signature(self.mode, &mut sig, msg, ctx, &rnd, &self.privkey);
@@ -185,12 +259,21 @@ impl DilithiumKeyPair {
         msg: &[u8],
         ctx: &[u8],
     ) -> Result<DilithiumSignature, DilithiumError> {
-        if ctx.len() > 255 {
-            return Err(DilithiumError::BadArgument);
-        }
+        self.sign_prehash_with_rng(msg, ctx, &mut |buf| getrandom(buf))
+    }
 
+    /// Hedged HashML-DSA signing with a caller-supplied entropy source.
+    ///
+    /// See [`generate_with_rng`](Self::generate_with_rng) for the `fill`
+    /// contract.
+    pub fn sign_prehash_with_rng(
+        &self,
+        msg: &[u8],
+        ctx: &[u8],
+        fill: &mut dyn FnMut(&mut [u8]) -> Result<(), ()>,
+    ) -> Result<DilithiumSignature, DilithiumError> {
         let mut rnd = [0u8; RNDBYTES];
-        getrandom(&mut rnd).map_err(|()| DilithiumError::RandomError)?;
+        fill(&mut rnd).map_err(|()| DilithiumError::RandomError)?;
 
         let mut sig = vec![0u8; self.mode.signature_bytes()];
         let ret = sign::sign_hash(self.mode, &mut sig, msg, ctx, &rnd, &self.privkey);
@@ -210,10 +293,6 @@ impl DilithiumKeyPair {
         ctx: &[u8],
         rnd: &[u8; RNDBYTES],
     ) -> Result<DilithiumSignature, DilithiumError> {
-        if ctx.len() > 255 {
-            return Err(DilithiumError::BadArgument);
-        }
-
         let mut sig = vec![0u8; self.mode.signature_bytes()];
         let ret = sign::sign_signature(self.mode, &mut sig, msg, ctx, rnd, &self.privkey);
         if ret != 0 {
@@ -349,13 +428,16 @@ impl DilithiumKeyPair {
         packing::pack_pk(mode, &mut pk_expected, &rho, &t1);
         let pk_ok = pk_expected == pubkey;
 
-        // Compare sk's t0 against the recomputed low part.
-        let mut t0_ok = true;
+        // Compare sk's t0 against the recomputed low part. `t0` is secret
+        // key material, so the comparison is constant-time and never exits
+        // early: it must not reveal which coefficient differs.
+        let mut t0_diff = 0i32;
         for i in 0..mode.k() {
-            if t0.vec[i].coeffs != t0_expected.vec[i].coeffs {
-                t0_ok = false;
+            for j in 0..N {
+                t0_diff |= t0.vec[i].coeffs[j] ^ t0_expected.vec[i].coeffs[j];
             }
         }
+        let t0_ok = t0_diff == 0;
 
         // Zeroize secret material unpacked for validation.
         key.zeroize();
@@ -382,13 +464,18 @@ impl DilithiumKeyPair {
     ///
     /// The mode tag encodes the security level so deserialization
     /// can automatically select the correct parameters.
+    ///
+    /// The returned buffer contains the **plaintext private key**; it is
+    /// wrapped in [`Zeroizing`] so it is wiped when dropped. It derefs to
+    /// `Vec<u8>`/`[u8]`, so it can be used anywhere a byte buffer is
+    /// expected — but copying it out of the wrapper defeats the wipe.
     #[must_use]
-    pub fn to_bytes(&self) -> Vec<u8> {
+    pub fn to_bytes(&self) -> Zeroizing<Vec<u8>> {
         let mut buf = Vec::with_capacity(1 + self.pubkey.len() + self.privkey.len());
         buf.push(self.mode.mode_tag());
         buf.extend_from_slice(&self.pubkey);
         buf.extend_from_slice(&self.privkey);
-        buf
+        Zeroizing::new(buf)
     }
 
     /// Deserialize a key pair from the format produced by [`to_bytes`](Self::to_bytes).
@@ -467,4 +554,80 @@ impl DilithiumSignature {
 #[cfg(feature = "getrandom")]
 fn getrandom(buf: &mut [u8]) -> Result<(), ()> {
     ::getrandom::getrandom(buf).map_err(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An entropy source that always fails, to exercise the RNG-failure
+    /// paths: a failing RNG must yield `RandomError` and never a key or
+    /// signature (FIPS 204 §3.6.3 — no signature without fresh randomness).
+    fn failing_rng(_buf: &mut [u8]) -> Result<(), ()> {
+        Err(())
+    }
+
+    #[test]
+    fn test_generate_reports_rng_failure() {
+        let err = DilithiumKeyPair::generate_with_rng(ML_DSA_44, &mut failing_rng).unwrap_err();
+        assert_eq!(err, DilithiumError::RandomError);
+    }
+
+    #[test]
+    fn test_sign_reports_rng_failure() {
+        let kp = DilithiumKeyPair::generate_deterministic(ML_DSA_44, &[1u8; SEEDBYTES]);
+        assert_eq!(
+            kp.sign_with_rng(b"m", b"", &mut failing_rng).unwrap_err(),
+            DilithiumError::RandomError
+        );
+        assert_eq!(
+            kp.sign_prehash_with_rng(b"m", b"", &mut failing_rng)
+                .unwrap_err(),
+            DilithiumError::RandomError
+        );
+    }
+
+    /// A key pair whose private key has the wrong length cannot be built
+    /// through any constructor, but it can arise from a corrupted in-memory
+    /// state. Signing must then fail cleanly instead of panicking.
+    #[test]
+    fn test_sign_with_corrupt_private_key_returns_error() {
+        let kp = DilithiumKeyPair::generate_deterministic(ML_DSA_44, &[2u8; SEEDBYTES]);
+        let broken = DilithiumKeyPair {
+            privkey: Zeroizing::new(kp.privkey[..kp.privkey.len() - 1].to_vec()),
+            pubkey: kp.pubkey.clone(),
+            mode: kp.mode,
+        };
+
+        assert_eq!(
+            broken.sign_with_rng(b"m", b"", &mut |b: &mut [u8]| {
+                b.fill(0);
+                Ok(())
+            }),
+            Err(DilithiumError::BadArgument)
+        );
+        assert_eq!(
+            broken.sign_prehash_with_rng(b"m", b"", &mut |b: &mut [u8]| {
+                b.fill(0);
+                Ok(())
+            }),
+            Err(DilithiumError::BadArgument)
+        );
+        assert_eq!(
+            broken.sign_deterministic(b"m", b"", &[0u8; RNDBYTES]),
+            Err(DilithiumError::BadArgument)
+        );
+    }
+
+    /// `Debug` must never expose private key bytes.
+    #[test]
+    fn test_debug_redacts_private_key() {
+        let kp = DilithiumKeyPair::generate_deterministic(ML_DSA_44, &[3u8; SEEDBYTES]);
+        let rendered = alloc::format!("{kp:?}");
+        assert!(rendered.contains("[REDACTED]"));
+        // No run of actual key bytes may appear in the rendering.
+        let first_bytes = alloc::format!("{:?}", &kp.privkey[..8]);
+        assert!(!rendered.contains(&first_bytes));
+        assert!(rendered.contains("Dilithium2"));
+    }
 }

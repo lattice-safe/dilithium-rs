@@ -4,6 +4,8 @@
 //! Two types: `PolyVecL` (length L) and `PolyVecK` (length K), using
 //! max-size arrays with runtime dimension from `DilithiumMode`.
 
+use zeroize::Zeroize;
+
 use crate::params::*;
 use crate::poly::Poly;
 
@@ -92,7 +94,9 @@ pub fn polyvecl_uniform_eta(
 ) {
     let l = mode.l();
     for i in 0..l {
-        Poly::uniform_eta(mode, &mut v.vec[i], seed, nonce + i as u16);
+        // wrapping_add matches the C reference's uint16_t nonce arithmetic
+        // and keeps debug builds panic-free even at the u16 boundary.
+        Poly::uniform_eta(mode, &mut v.vec[i], seed, nonce.wrapping_add(i as u16));
     }
 }
 
@@ -105,7 +109,7 @@ pub fn polyvecl_uniform_gamma1(
 ) {
     let l = mode.l();
     for i in 0..l {
-        Poly::uniform_gamma1(mode, &mut v.vec[i], seed, nonce + i as u16);
+        Poly::uniform_gamma1(mode, &mut v.vec[i], seed, nonce.wrapping_add(i as u16));
     }
 }
 
@@ -168,21 +172,32 @@ pub fn polyvecl_pointwise_acc_montgomery(
     Poly::pointwise_montgomery(w, &u.vec[0], &v.vec[0]);
     for i in 1..l {
         Poly::pointwise_montgomery(&mut t, &u.vec[i], &v.vec[i]);
-        let w_copy = w.clone();
-        Poly::add(w, &w_copy, &t);
+        // In-place accumulation: the previous `w.clone()` left an
+        // un-zeroized copy of a secret partial sum (`A * NTT(y)` during
+        // signing) on the stack for every one of the K*L products.
+        Poly::add_assign(w, &t);
     }
+    t.zeroize();
 }
+
+// Bound note: each `montgomery_reduce` output lies in `(-Q, Q)`, so the
+// accumulator above stays within `L_MAX * Q = 7Q < 2^26`, far inside the
+// `reduce32` precondition (`|a| <= 2^31 - 2^22 - 1`) that the callers rely on.
+const _: () = assert!((L_MAX as i64) * (Q as i64) < (1i64 << 31) - (1 << 22) - 1);
 
 /// Check infinity norm of polynomials in vector.
 /// Returns `true` if any polynomial has norm >= bound.
+///
+/// Every polynomial is scanned unconditionally (no early exit), so the
+/// running time does not reveal *which* polynomial exceeded the bound —
+/// see [`Poly::chknorm`].
 #[must_use]
 pub fn polyvecl_chknorm(mode: DilithiumMode, v: &PolyVecL, bound: i32) -> bool {
+    let mut fail = false;
     for i in 0..mode.l() {
-        if v.vec[i].chknorm(bound) {
-            return true;
-        }
+        fail |= v.vec[i].chknorm(bound);
     }
-    false
+    fail
 }
 
 // ================================================================
@@ -198,7 +213,7 @@ pub fn polyveck_uniform_eta(
 ) {
     let k = mode.k();
     for i in 0..k {
-        Poly::uniform_eta(mode, &mut v.vec[i], seed, nonce + i as u16);
+        Poly::uniform_eta(mode, &mut v.vec[i], seed, nonce.wrapping_add(i as u16));
     }
 }
 
@@ -277,6 +292,13 @@ pub fn polyveck_pointwise_poly_montgomery(
     }
 }
 
+/// In-place pointwise multiply by a scalar polynomial: `r = a * r`.
+pub fn polyveck_pointwise_poly_montgomery_assign(mode: DilithiumMode, r: &mut PolyVecK, a: &Poly) {
+    for i in 0..mode.k() {
+        Poly::pointwise_montgomery_assign(&mut r.vec[i], a);
+    }
+}
+
 /// Power-of-2 rounding of all polynomials.
 pub fn polyveck_power2round(
     mode: DilithiumMode,
@@ -317,6 +339,13 @@ pub fn polyveck_use_hint(mode: DilithiumMode, w: &mut PolyVecK, v: &PolyVecK, h:
     }
 }
 
+/// In-place hint application for all polynomials: `w = UseHint(h, w)`.
+pub fn polyveck_use_hint_assign(mode: DilithiumMode, w: &mut PolyVecK, h: &PolyVecK) {
+    for i in 0..mode.k() {
+        Poly::use_hint_assign(mode, &mut w.vec[i], &h.vec[i]);
+    }
+}
+
 /// Pack w1 polynomials.
 pub fn polyveck_pack_w1(mode: DilithiumMode, r: &mut [u8], w1: &PolyVecK) {
     let packed = mode.polyw1_packedbytes();
@@ -326,12 +355,13 @@ pub fn polyveck_pack_w1(mode: DilithiumMode, r: &mut [u8], w1: &PolyVecK) {
 }
 
 /// Check infinity norm of polynomials in vector.
+///
+/// Scans every polynomial unconditionally — see [`polyvecl_chknorm`].
 #[must_use]
 pub fn polyveck_chknorm(mode: DilithiumMode, v: &PolyVecK, bound: i32) -> bool {
+    let mut fail = false;
     for i in 0..mode.k() {
-        if v.vec[i].chknorm(bound) {
-            return true;
-        }
+        fail |= v.vec[i].chknorm(bound);
     }
-    false
+    fail
 }

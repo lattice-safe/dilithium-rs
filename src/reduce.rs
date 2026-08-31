@@ -6,8 +6,13 @@ use crate::params::{Q, QINV};
 
 /// Montgomery reduction.
 ///
-/// For finite field element `a` with `-2^{31}*Q <= a <= Q*2^{31}`,
+/// For finite field element `a` with `-2^{31}*Q <= a < Q*2^{31}`,
 /// compute `r ≡ a * 2^{-32} (mod Q)` such that `-Q < r < Q`.
+///
+/// The upper bound is strict: the C reference documents it as inclusive, but
+/// `a = Q*2^{31}` returns exactly `Q`. No call site can reach it — the
+/// largest product is `|zeta| * |coeff| < Q * 2^{31}` — and
+/// `scripts/algebra_check.py` verifies the bound over the full range.
 #[inline]
 #[must_use]
 pub fn montgomery_reduce(a: i64) -> i32 {

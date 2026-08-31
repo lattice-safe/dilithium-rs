@@ -50,11 +50,31 @@ pub fn decompose(mode: DilithiumMode, a: i32) -> (i32, i32) {
 /// overflow into the high bits.
 ///
 /// Returns `true` if overflow.
+///
+/// # Constant time
+///
+/// Evaluated branchlessly. The reference implementation writes this as
+/// `a0 > gamma2 || a0 < -gamma2 || (a0 == -gamma2 && a1 != 0)`, whose `||`
+/// / `&&` short-circuits create secret-dependent branches: `a0` is a
+/// coefficient of the secret `w0 = LowBits(Ay - c*s2)`. The hint *bit*
+/// itself is public (it is part of the signature), but the short-circuit
+/// additionally distinguishes `a0 > gamma2` from `a0 < -gamma2`, i.e. the
+/// sign of a secret value. The masked form below has the identical truth
+/// table with no data-dependent control flow.
 #[inline]
 #[must_use]
 pub fn make_hint(mode: DilithiumMode, a0: i32, a1: i32) -> bool {
     let gamma2 = mode.gamma2();
-    a0 > gamma2 || a0 < -gamma2 || (a0 == -gamma2 && a1 != 0)
+
+    // a0 > gamma2  <=>  gamma2 - a0 < 0
+    let gt = ((gamma2.wrapping_sub(a0) as u32) >> 31) & 1;
+    // sum == 0  <=>  a0 == -gamma2 ; sum < 0  <=>  a0 < -gamma2
+    let sum = a0.wrapping_add(gamma2);
+    let lt = ((sum as u32) >> 31) & 1;
+    let is_neg_gamma2 = ((((sum | sum.wrapping_neg()) as u32) >> 31) & 1) ^ 1;
+    let a1_nonzero = (((a1 | a1.wrapping_neg()) as u32) >> 31) & 1;
+
+    (gt | lt | (is_neg_gamma2 & a1_nonzero)) != 0
 }
 
 /// Correct high bits according to hint.
@@ -127,6 +147,72 @@ mod tests {
                     mode, a
                 );
             }
+        }
+    }
+
+    /// The branchless `make_hint` must have exactly the truth table of the
+    /// reference expression, including at the `a0 == -gamma2` boundary where
+    /// the result depends on `a1`.
+    #[test]
+    fn test_make_hint_matches_reference_expression() {
+        fn reference(gamma2: i32, a0: i32, a1: i32) -> bool {
+            a0 > gamma2 || a0 < -gamma2 || (a0 == -gamma2 && a1 != 0)
+        }
+
+        for mode in [
+            DilithiumMode::Dilithium2,
+            DilithiumMode::Dilithium3,
+            DilithiumMode::Dilithium5,
+        ] {
+            let g = mode.gamma2();
+            // Boundaries, plus a wide sweep of the reachable w0 range.
+            let mut a0s = alloc::vec![
+                0,
+                1,
+                -1,
+                g,
+                g + 1,
+                g - 1,
+                -g,
+                -g + 1,
+                -g - 1,
+                2 * g,
+                -2 * g,
+                6283008,
+                -6283008,
+            ];
+            let mut x = -3 * g;
+            while x <= 3 * g {
+                a0s.push(x);
+                x += g / 97 + 1;
+            }
+
+            for a0 in a0s {
+                for a1 in [0, 1, -1, 15, 43, 44] {
+                    assert_eq!(
+                        make_hint(mode, a0, a1),
+                        reference(g, a0, a1),
+                        "make_hint mismatch: mode={mode:?} a0={a0} a1={a1}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The `a0 == -gamma2` clause: the hint is set only when `a1 != 0`.
+    #[test]
+    fn test_make_hint_negative_gamma2_boundary() {
+        for mode in [
+            DilithiumMode::Dilithium2,
+            DilithiumMode::Dilithium3,
+            DilithiumMode::Dilithium5,
+        ] {
+            let g = mode.gamma2();
+            assert!(!make_hint(mode, -g, 0));
+            assert!(make_hint(mode, -g, 1));
+            assert!(!make_hint(mode, g, 0));
+            assert!(make_hint(mode, g + 1, 0));
+            assert!(make_hint(mode, -g - 1, 0));
         }
     }
 

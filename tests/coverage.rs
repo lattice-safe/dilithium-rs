@@ -320,3 +320,101 @@ fn test_all_mode_sizes_match_fips() {
     assert_eq!(ML_DSA_87.secret_key_bytes(), 4896);
     assert_eq!(ML_DSA_87.signature_bytes(), 4627);
 }
+
+// ================================================================
+// In-place vs out-of-place kernel equivalence
+// ================================================================
+
+/// Verification uses the in-place `*_assign` kernels to avoid cloning whole
+/// polynomial vectors. They must agree exactly with the out-of-place forms
+/// that mirror the C reference API.
+#[test]
+fn test_inplace_kernels_match_out_of_place() {
+    use dilithium::poly::Poly;
+    use dilithium::polyvec::*;
+
+    for mode in [
+        DilithiumMode::Dilithium2,
+        DilithiumMode::Dilithium3,
+        DilithiumMode::Dilithium5,
+    ] {
+        // Deterministic pseudorandom inputs in the reduced range.
+        let mut x: u32 = 0xC0FF_EE01;
+        let mut next = move || {
+            x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (x >> 8) as i32 % Q
+        };
+
+        let mut a = Poly::zero();
+        let mut v = PolyVecK::default();
+        let mut h = PolyVecK::default();
+        for i in 0..N {
+            a.coeffs[i] = next();
+        }
+        for j in 0..mode.k() {
+            for i in 0..N {
+                v.vec[j].coeffs[i] = next().abs() % Q;
+                h.vec[j].coeffs[i] = i32::from(next() & 1 == 0);
+            }
+        }
+
+        // use_hint
+        let mut out_of_place = PolyVecK::default();
+        polyveck_use_hint(mode, &mut out_of_place, &v, &h);
+        let mut in_place = v.clone();
+        polyveck_use_hint_assign(mode, &mut in_place, &h);
+        for j in 0..mode.k() {
+            assert_eq!(
+                out_of_place.vec[j].coeffs, in_place.vec[j].coeffs,
+                "use_hint mismatch for {mode:?} poly {j}"
+            );
+        }
+
+        // Single-polynomial use_hint
+        let mut p_out = Poly::zero();
+        Poly::use_hint(mode, &mut p_out, &v.vec[0], &h.vec[0]);
+        let mut p_in = v.vec[0].clone();
+        Poly::use_hint_assign(mode, &mut p_in, &h.vec[0]);
+        assert_eq!(p_out.coeffs, p_in.coeffs);
+
+        // pointwise_montgomery
+        let mut prod_out = PolyVecK::default();
+        polyveck_pointwise_poly_montgomery(mode, &mut prod_out, &a, &v);
+        let mut prod_in = v.clone();
+        polyveck_pointwise_poly_montgomery_assign(mode, &mut prod_in, &a);
+        for j in 0..mode.k() {
+            assert_eq!(
+                prod_out.vec[j].coeffs, prod_in.vec[j].coeffs,
+                "pointwise mismatch for {mode:?} poly {j}"
+            );
+        }
+
+        // Vector add/sub, in-place and out-of-place
+        let mut sum = PolyVecK::default();
+        polyveck_add(mode, &mut sum, &v, &prod_out);
+        let mut sum_in = v.clone();
+        polyveck_add_assign(mode, &mut sum_in, &prod_out);
+        let mut diff = PolyVecK::default();
+        polyveck_sub(mode, &mut diff, &v, &prod_out);
+        let mut diff_in = v.clone();
+        polyveck_sub_assign(mode, &mut diff_in, &prod_out);
+        for j in 0..mode.k() {
+            assert_eq!(sum.vec[j].coeffs, sum_in.vec[j].coeffs);
+            assert_eq!(diff.vec[j].coeffs, diff_in.vec[j].coeffs);
+        }
+
+        let mut l = PolyVecL::default();
+        for j in 0..mode.l() {
+            for i in 0..N {
+                l.vec[j].coeffs[i] = next();
+            }
+        }
+        let mut l_sum = PolyVecL::default();
+        polyvecl_add(mode, &mut l_sum, &l, &l);
+        let mut l_sum_in = l.clone();
+        polyvecl_add_assign(mode, &mut l_sum_in, &l);
+        for j in 0..mode.l() {
+            assert_eq!(l_sum.vec[j].coeffs, l_sum_in.vec[j].coeffs);
+        }
+    }
+}

@@ -9,6 +9,18 @@ use sha3::{Shake128, Shake256};
 
 use crate::params::{CRHBYTES, SEEDBYTES};
 
+/// A squeezable extendable-output byte source.
+///
+/// Abstracting the XOF behind a trait lets the rejection-sampling refill
+/// loops in [`crate::poly`] be driven by a deterministic test stream, so the
+/// (in practice astronomically unlikely, but security-relevant) "one SHAKE
+/// block was not enough" path can actually be exercised. Monomorphized —
+/// no runtime cost over calling the concrete type.
+pub trait XofStream {
+    /// Squeeze `out.len()` bytes from the stream.
+    fn squeeze(&mut self, out: &mut [u8]);
+}
+
 /// SHAKE128 stream state.
 pub struct Stream128 {
     reader: <Shake128 as ExtendableOutput>::Reader,
@@ -32,6 +44,13 @@ impl Stream128 {
     }
 }
 
+impl XofStream for Stream128 {
+    #[inline]
+    fn squeeze(&mut self, out: &mut [u8]) {
+        Stream128::squeeze(self, out);
+    }
+}
+
 /// SHAKE256 stream state.
 pub struct Stream256 {
     reader: <Shake256 as ExtendableOutput>::Reader,
@@ -52,6 +71,13 @@ impl Stream256 {
     /// Squeeze bytes from the stream.
     pub fn squeeze(&mut self, out: &mut [u8]) {
         self.reader.read(out);
+    }
+}
+
+impl XofStream for Stream256 {
+    #[inline]
+    fn squeeze(&mut self, out: &mut [u8]) {
+        Stream256::squeeze(self, out);
     }
 }
 

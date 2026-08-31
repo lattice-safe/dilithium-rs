@@ -112,15 +112,8 @@ mod tests {
         // Actually the round-trip gives: a[i] ≡ original[i] * mont (mod Q)
         // where mont = 2^32 mod Q = 4193792 (approximately)
         // Let's just check they're in valid range and non-trivially different
-        for i in 0..N {
-            // Result should be in valid range
-            assert!(
-                a[i] > -(Q * 8) && a[i] < Q * 8,
-                "coefficient {} out of range: {}",
-                i,
-                a[i]
-            );
-        }
+        let all_in_range = a.iter().all(|&c| c > -(Q * 8) && c < Q * 8);
+        assert!(all_in_range);
     }
 
     #[test]

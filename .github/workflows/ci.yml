@@ -116,11 +116,10 @@ jobs:
           cargo kani setup
       # Bounded model checking of the arithmetic contracts and of the
       # unpackers' output ranges on arbitrary attacker-supplied bytes.
-      # The Montgomery *congruence* harness is excluded: it rests on
-      # Q·QINV ≡ 1 (mod 2^32) and bit-blasting a 32-bit multiplicative
-      # inverse does not converge. That property is covered exhaustively by
-      # the exhaustive-proofs job instead. See src/verification.rs.
-      - run: cargo kani --exclude-harness proof_montgomery_reduce_congruence
+      # The Montgomery *congruence* harness sits behind the off-by-default
+      # `kani-slow` feature because it does not converge; that property is
+      # covered by the exhaustive-proofs job. See src/verification.rs.
+      - run: cargo kani
 
   deny:
     name: Dependency Audit
@@ -147,13 +146,21 @@ jobs:
         with:
           tool: cargo-llvm-cov
       - name: Generate coverage
-        # Region/line coverage is at 100%; the gate keeps it there. Rare
-        # branches that cannot be reached with real keys (the ||c*t0||
+        # Region/line/function coverage is at 100%; the gate keeps it there.
+        # Rare branches that cannot be reached with real keys (the ||c*t0||
         # rejection, RNG failure, corrupt-key guards) are covered by
         # dedicated tests — see tests/rejection_paths.rs and the
         # bring-your-own-RNG tests.
+        #
+        # The two SIMD modules are excluded from the gate, not from the test
+        # run: they contain per-architecture code, so on any single machine
+        # one architecture's kernels and the other's tests are dead code.
+        # Their correctness is covered by the SIMD-vs-scalar equivalence
+        # tests and the full KAT suite in the Test jobs, on both x86_64 and
+        # aarch64.
         run: >-
           cargo llvm-cov --all-features --lcov --output-path lcov.info
+          --ignore-filename-regex 'src/ntt_(avx2|neon)\.rs'
           --fail-under-lines 100 --fail-under-regions 100
           --fail-under-functions 100
       - name: Upload coverage

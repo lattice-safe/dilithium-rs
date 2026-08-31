@@ -173,40 +173,91 @@ pub unsafe fn invntt_neon(a: &mut [i32; N]) {
     }
 }
 
-/// Runtime-detected NTT dispatch (AArch64).
-pub fn ntt_simd(a: &mut [i32; N]) {
+/// NEON is architectural on AArch64 — no runtime detection needed.
+#[must_use]
+pub fn neon_available() -> bool {
+    cfg!(target_arch = "aarch64")
+}
+
+/// NTT with the kernel chosen by the caller. Split out from [`ntt_simd`] so
+/// both arms are reachable in tests — see the AVX2 module for the rationale.
+pub fn ntt_dispatch(a: &mut [i32; N], use_neon: bool) {
     #[cfg(target_arch = "aarch64")]
-    {
-        // NEON is always available on AArch64
+    if use_neon {
+        // SAFETY: NEON is guaranteed on AArch64.
         unsafe {
             ntt_neon(a);
         }
         return;
     }
-    #[allow(unreachable_code)]
-    {
-        crate::ntt::ntt(a);
-    }
+    let _ = use_neon;
+    crate::ntt::ntt(a);
 }
 
-/// Runtime-detected inverse NTT dispatch (AArch64).
-pub fn invntt_simd(a: &mut [i32; N]) {
+/// Inverse NTT with the kernel chosen by the caller. See [`ntt_dispatch`].
+pub fn invntt_dispatch(a: &mut [i32; N], use_neon: bool) {
     #[cfg(target_arch = "aarch64")]
-    {
+    if use_neon {
+        // SAFETY: as in `ntt_dispatch`.
         unsafe {
             invntt_neon(a);
         }
         return;
     }
-    #[allow(unreachable_code)]
-    {
-        crate::ntt::invntt_tomont(a);
-    }
+    let _ = use_neon;
+    crate::ntt::invntt_tomont(a);
+}
+
+/// NTT dispatch (AArch64).
+pub fn ntt_simd(a: &mut [i32; N]) {
+    ntt_dispatch(a, neon_available());
+}
+
+/// Inverse NTT dispatch (AArch64).
+pub fn invntt_simd(a: &mut [i32; N]) {
+    invntt_dispatch(a, neon_available());
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Both dispatch arms must agree with the scalar transform.
+    #[test]
+    fn test_both_dispatch_arms_match_scalar() {
+        let mut reference = [0i32; N];
+        for i in 0..N {
+            reference[i] = (i as i32 * 37 + 11) % Q;
+        }
+        let mut expected = reference;
+        crate::ntt::ntt(&mut expected);
+
+        let mut fallback = reference;
+        ntt_dispatch(&mut fallback, false);
+        assert_eq!(fallback, expected, "scalar fallback arm diverged");
+
+        if neon_available() {
+            let mut accel = reference;
+            ntt_dispatch(&mut accel, true);
+            assert_eq!(accel, expected, "NEON arm diverged from scalar");
+        }
+
+        let mut inv_expected = expected;
+        crate::ntt::invntt_tomont(&mut inv_expected);
+
+        let mut inv_fallback = expected;
+        invntt_dispatch(&mut inv_fallback, false);
+        assert_eq!(
+            inv_fallback, inv_expected,
+            "scalar inverse fallback diverged"
+        );
+
+        if neon_available() {
+            let mut inv_accel = expected;
+            invntt_dispatch(&mut inv_accel, true);
+            assert_eq!(inv_accel, inv_expected, "NEON inverse arm diverged");
+        }
+    }
 
     #[test]
     fn test_ntt_neon_matches_scalar() {

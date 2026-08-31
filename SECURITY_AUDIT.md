@@ -350,6 +350,16 @@ and functions** (`cargo llvm-cov --all-features`), enforced in CI. The gap
 mattered: the uncovered regions were precisely the security-relevant rare
 paths.
 
+The two SIMD modules are excluded from the gate — not from the test run. They
+contain per-architecture code, so on any single machine one architecture's
+kernels and the other's tests are unreachable; no host can reach 100% there.
+What was fixed instead is the real gap the accounting had hidden: the runtime
+dispatchers' scalar-fallback arm was never executed on a machine that has the
+accelerated kernel, so the path a non-AVX2 x86_64 host depends on went
+untested. `ntt_dispatch`/`invntt_dispatch` now take the decision as a
+parameter, and a test drives **both** arms and compares each against the
+scalar transform.
+
 | Previously uncovered | Now covered by |
 |---|---|
 | The `‖c·t0‖∞ ≥ γ₂` rejection branch (p ≈ 2⁻²³ per iteration with real keys) | `tests/rejection_paths.rs` — a secret key with enlarged `t0`, chosen so the bound is exceeded a few percent of the time while the hint weight stays under ω, so the loop still terminates |
@@ -494,7 +504,7 @@ committing: 282 → 185 and 322 → 187 files for the two sign/verify targets.
 ## Reproducing this round
 
 ```sh
-cargo test --all-features                   # 154 tests
+cargo test --all-features                   # 156 tests
 cargo test --release --features simd        # NEON kernels + KATs
 ./scripts/test-avx2-docker.sh               # AVX2 kernels under QEMU
 cargo llvm-cov --all-features \

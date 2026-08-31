@@ -23,7 +23,7 @@
 | SIMD acceleration (AVX2 + NEON) | ✅ |
 | Bring-your-own-RNG (`no_std` friendly) | ✅ |
 | 0 `unsafe` blocks (core library) | ✅ |
-| 100% region / line / function test coverage | ✅ |
+| 100% region / line / function test coverage (excl. per-arch SIMD) | ✅ |
 
 ## Quick Start
 
@@ -228,7 +228,7 @@ See [SECURITY.md](SECURITY.md) for responsible disclosure and scope.
 ## Test Suite
 
 ```
-cargo test --all-features               # all 154 tests
+cargo test --all-features               # all 156 tests
 cargo test --features serde             # with serde
 cargo test --features simd              # with SIMD (AVX2 / NEON kernels)
 cargo clippy --all-targets --all-features -- -D warnings  # 0 warnings
@@ -246,7 +246,7 @@ python3 scripts/algebra_check.py src/ntt.rs      # bit-exact arithmetic model
 
 | Suite | Tests | What |
 |-------|-------|------|
-| Unit | 48 | NTT, reduce, rounding, SHAKE-vs-`sha3` at every rate boundary, poly, SIMD-vs-scalar, sampler refill paths, RNG-failure and `Debug` redaction |
+| Unit | 50 | NTT, reduce, rounding, SHAKE-vs-`sha3` at every rate boundary, poly, both SIMD dispatch arms vs scalar, sampler refill paths, RNG-failure and `Debug` redaction |
 | API coverage | 33 | Error `Display`, mode tags, serialization error paths, hint decodings, bring-your-own-RNG |
 | Coverage | 20 | Edge cases, error paths, boundaries, OID DER encoding, in-place vs out-of-place kernels |
 | **ACVP** | **5** | **Official NIST vectors: 75 keyGen, 12 pure sigGen (ctx 0–245 B), SHA-512 HashML-DSA sigGen/verify, 19 sigVer incl. all four negative reasons** |
@@ -264,7 +264,12 @@ pre-hash vectors are exercised — the other approved pre-hash functions
 (SHA-256, SHA3-\*, SHAKE-\*) are not implemented.
 
 **Coverage: 100% of regions, lines and functions**
-(`cargo llvm-cov --all-features`, enforced at 100% in CI).
+(`cargo llvm-cov --all-features`, enforced at 100% in CI), excluding
+`src/ntt_avx2.rs` and `src/ntt_neon.rs` — per-architecture code cannot be
+fully covered from a single machine. Those kernels are instead verified by
+SIMD-vs-scalar equivalence tests plus the full KAT suite, on both
+architectures, and both arms of the runtime dispatch (accelerated and scalar
+fallback) are tested explicitly.
 
 ### Docker
 
@@ -305,7 +310,7 @@ than taken on faith. Details in [SECURITY_AUDIT.md](SECURITY_AUDIT.md).
 | Arithmetic layer, exhaustive | `power2round`, `decompose` and `use_hint` verified over **all 8,380,417 field elements**; `make_hint` over every reachable `(a0, a1)`; every packer over every coefficient value; the hint lemma the scheme rests on — `cargo run --release --example exhaustive_proofs` |
 | Arithmetic layer, formal | Kani bounded model checking of the same contracts *symbolically*, plus absence of panics/overflow/OOB, plus the unpackers' output ranges for arbitrary attacker-supplied bytes — 13 harnesses discharge; `cargo kani` |
 | Constant time | dudect-style measurement of the branchless `chknorm` and `make_hint` against the reference short-circuiting forms as positive controls: the `chknorm` control fires at \|t\| ≈ 16,000 while the shipped version stays under \|t\| = 1. The `make_hint` control does *not* fire — LLVM already compiles the reference short-circuit branchlessly on aarch64, so there was nothing to detect on this target |
-| Test coverage | 100% of regions, lines and functions (`cargo llvm-cov --all-features`), enforced in CI |
+| Test coverage | 100% of regions, lines and functions (`cargo llvm-cov --all-features`), enforced in CI. The two per-architecture SIMD modules are excluded from the gate: on any one machine, another architecture's kernels — and its tests — are unreachable code. Their correctness is covered by the SIMD-vs-scalar equivalence tests and the KAT suite, run on both x86_64 and aarch64 |
 | Memory safety | 34 adversarial public-API cases produce no panic; all `unsafe` is confined to the SIMD NTT and reviewed for feature-gating, bounds and aliasing |
 | SIMD kernels | NEON exercised locally (full KAT suite through the SIMD path); AVX2 exercised under QEMU via `./scripts/test-avx2-docker.sh`, and in CI on the x86_64 runner |
 | Fuzzing | 4 targets, ~1.1 billion executions in this round (8 min each), no crashes and no hangs. Note: `cargo fuzz` must be run with `--sanitizer=none` on macOS 26 — see `fuzz/README.md` |

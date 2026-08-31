@@ -87,13 +87,18 @@ fn proof_montgomery_reduce_bound() {
 
 /// `r · 2^32 = a − t·Q`, i.e. `r ≡ a·2^{-32} (mod Q)`.
 ///
-/// Not part of the default run: the property rests on
+/// Behind the off-by-default `kani-slow` feature: the property rests on
 /// `Q · QINV ≡ 1 (mod 2^32)` zeroing the low 32 bits of `a − t·Q`, and
 /// bit-blasting a 32-bit multiplicative inverse does not converge in
-/// reasonable time (CBMC was still running after five minutes). Excluded in
-/// CI via `--exclude-harness`; the congruence is instead verified over the
-/// NTT-reachable products by `examples/exhaustive_proofs.rs` and by the
-/// bit-exact model in `scripts/algebra_check.py`.
+/// reasonable time (CBMC was still running after five minutes with either
+/// solver). The congruence is instead verified over the NTT-reachable
+/// products by `examples/exhaustive_proofs.rs` and by the bit-exact model in
+/// `scripts/algebra_check.py`.
+///
+/// ```text
+/// cargo kani --features kani-slow --harness proof_montgomery_reduce_congruence
+/// ```
+#[cfg(feature = "kani-slow")]
 #[kani::proof]
 #[kani::solver(cadical)]
 fn proof_montgomery_reduce_congruence() {

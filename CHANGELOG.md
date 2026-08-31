@@ -115,6 +115,13 @@ hardening findings; 100% region/line/function coverage.
   `reduce32`'s input bound
 
 ### Changed
+- The SIMD runtime dispatchers take the decision as a parameter
+  (`ntt_dispatch`/`invntt_dispatch` plus `avx2_available`/`neon_available`),
+  so **both** arms are testable. Previously the scalar-fallback arm never
+  executed on a machine with the accelerated kernel, leaving the path a
+  non-AVX2 x86_64 host depends on untested. The coverage gate excludes the
+  two per-architecture SIMD modules, since no single machine can reach 100%
+  there
 - `sha3` moves from a runtime dependency to a dev-dependency; `keccak` is the
   new runtime dependency (see R2-12). The public `symmetric` API is unchanged
 - CI gains an exhaustive-proofs job and a Kani formal-verification job

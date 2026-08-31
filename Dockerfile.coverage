@@ -20,7 +20,11 @@ RUN rustup component add llvm-tools-preview \
 WORKDIR /app
 COPY . .
 
+# The two SIMD modules are excluded from the gate (not from the tests): they
+# hold per-architecture code, so on any one machine another architecture's
+# kernels and tests are unreachable. See the CI workflow for the rationale.
 CMD ["cargo", "llvm-cov", "--all-features", \
+     "--ignore-filename-regex", "src/ntt_(avx2|neon)\\.rs", \
      "--fail-under-lines", "100", \
      "--fail-under-regions", "100", \
      "--fail-under-functions", "100"]

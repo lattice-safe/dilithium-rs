@@ -201,56 +201,115 @@ pub unsafe fn invntt_avx2(a: &mut [i32; N]) {
     }
 }
 
-/// Runtime-detected NTT dispatch.
-/// Uses AVX2 if available on x86_64, otherwise falls back to scalar.
-/// With `no_std`, runtime detection is unavailable; AVX2 is used only if
-/// enabled at compile time (e.g. `-C target-feature=+avx2`).
-pub fn ntt_simd(a: &mut [i32; N]) {
+/// Is the AVX2 kernel usable on this machine?
+///
+/// Runtime detection under `std`; with `no_std` there is no detector, so the
+/// kernel is used only when it was enabled at compile time
+/// (`-C target-feature=+avx2`).
+#[must_use]
+pub fn avx2_available() -> bool {
     #[cfg(all(target_arch = "x86_64", feature = "std"))]
     {
-        if is_x86_feature_detected!("avx2") {
-            unsafe {
-                ntt_avx2(a);
-            }
-            return;
-        }
+        return is_x86_feature_detected!("avx2");
     }
     #[cfg(all(target_arch = "x86_64", not(feature = "std"), target_feature = "avx2"))]
     {
+        return true;
+    }
+    #[allow(unreachable_code)]
+    false
+}
+
+/// NTT with the kernel chosen by the caller.
+///
+/// Split out from [`ntt_simd`] so both arms are reachable in tests: on a
+/// machine with AVX2 the scalar fallback in the dispatcher would otherwise
+/// never execute, leaving the path that a non-AVX2 x86_64 host depends on
+/// untested (and uncovered).
+pub fn ntt_dispatch(a: &mut [i32; N], use_avx2: bool) {
+    #[cfg(target_arch = "x86_64")]
+    if use_avx2 {
+        // SAFETY: the caller passes `true` only when AVX2 is available —
+        // `ntt_simd` obtains it from `avx2_available()`, and the tests gate
+        // on the same check.
         unsafe {
             ntt_avx2(a);
         }
         return;
     }
-    #[allow(unreachable_code)]
+    let _ = use_avx2;
     crate::ntt::ntt(a);
 }
 
-/// Runtime-detected inverse NTT dispatch.
-pub fn invntt_simd(a: &mut [i32; N]) {
-    #[cfg(all(target_arch = "x86_64", feature = "std"))]
-    {
-        if is_x86_feature_detected!("avx2") {
-            unsafe {
-                invntt_avx2(a);
-            }
-            return;
-        }
-    }
-    #[cfg(all(target_arch = "x86_64", not(feature = "std"), target_feature = "avx2"))]
-    {
+/// Inverse NTT with the kernel chosen by the caller. See [`ntt_dispatch`].
+pub fn invntt_dispatch(a: &mut [i32; N], use_avx2: bool) {
+    #[cfg(target_arch = "x86_64")]
+    if use_avx2 {
+        // SAFETY: as in `ntt_dispatch`.
         unsafe {
             invntt_avx2(a);
         }
         return;
     }
-    #[allow(unreachable_code)]
+    let _ = use_avx2;
     crate::ntt::invntt_tomont(a);
+}
+
+/// Runtime-detected NTT dispatch.
+/// Uses AVX2 if available on x86_64, otherwise falls back to scalar.
+pub fn ntt_simd(a: &mut [i32; N]) {
+    ntt_dispatch(a, avx2_available());
+}
+
+/// Runtime-detected inverse NTT dispatch.
+pub fn invntt_simd(a: &mut [i32; N]) {
+    invntt_dispatch(a, avx2_available());
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Both arms of the dispatcher must agree with the scalar transform:
+    /// the AVX2 kernel (when this machine has it) and the fallback that a
+    /// non-AVX2 x86_64 host would take.
+    #[test]
+    fn test_both_dispatch_arms_match_scalar() {
+        let mut reference = [0i32; N];
+        for i in 0..N {
+            reference[i] = (i as i32 * 37 + 11) % Q;
+        }
+        let mut expected = reference;
+        crate::ntt::ntt(&mut expected);
+
+        // Fallback arm — reachable on every machine.
+        let mut fallback = reference;
+        ntt_dispatch(&mut fallback, false);
+        assert_eq!(fallback, expected, "scalar fallback arm diverged");
+
+        // AVX2 arm — only where the feature is actually present.
+        if avx2_available() {
+            let mut accel = reference;
+            ntt_dispatch(&mut accel, true);
+            assert_eq!(accel, expected, "AVX2 arm diverged from scalar");
+        }
+
+        let mut inv_expected = expected;
+        crate::ntt::invntt_tomont(&mut inv_expected);
+
+        let mut inv_fallback = expected;
+        invntt_dispatch(&mut inv_fallback, false);
+        assert_eq!(
+            inv_fallback, inv_expected,
+            "scalar inverse fallback diverged"
+        );
+
+        if avx2_available() {
+            let mut inv_accel = expected;
+            invntt_dispatch(&mut inv_accel, true);
+            assert_eq!(inv_accel, inv_expected, "AVX2 inverse arm diverged");
+        }
+    }
 
     #[test]
     fn test_ntt_simd_matches_scalar() {

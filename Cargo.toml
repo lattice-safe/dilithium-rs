@@ -24,6 +24,11 @@ std = ["getrandom"]
 serde = ["dep:serde"]
 js = ["getrandom/js"]
 simd = []
+# Enables the one Kani harness that does not converge in reasonable time
+# (the Montgomery congruence — see src/verification.rs). Off by default so
+# `cargo kani` runs the tractable harnesses and picks up new ones
+# automatically. No effect outside Kani.
+kani-slow = []
 
 [dependencies]
 # Keccak-f[1600] permutation only: the SHAKE sponge lives in `src/shake.rs`

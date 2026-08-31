@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-08-31
+
+Documentation only — no code changes. 0.4.0's crates.io page was published
+before the README audit below landed, and a registry README can only be
+replaced by publishing again.
+
+### Fixed
+- The fuzzing claim advertised "41M+ cumulative executions" from runs that
+  had executed **zero** inputs: `cargo fuzz`'s default AddressSanitizer
+  deadlocks in its own initializer on macOS 26 / aarch64, which under an
+  external timeout looks like a clean exit. Replaced with the measured 0.4.0
+  campaign (~1.1 billion executions, no crashes, no hangs) and a pointer to
+  `fuzz/README.md`
+- The memory-safety row cited 34 adversarial cases that live in the audit's
+  scratch harness, not in the repository; it now points at the fuzz targets
+  and `tests/api_coverage.rs`, which a reader can actually run
+- The branchless-checks claim now cites the dudect measurement behind it
+  (reference `chknorm` at |t| ≈ 16,000, this implementation under |t| = 1)
+- The Docker coverage line did not mention that the 100% gate excludes the
+  per-architecture SIMD modules
+- The feature table omitted `kani-slow`, and neither the README nor the crate
+  docs stated the MSRV (1.85); `lib.rs`'s table — the docs.rs front page — is
+  back in step with `Cargo.toml`
+
+### Verified unchanged
+Key and signature sizes, every code snippet (compiled and run against the
+published crate), the per-suite test counts (156), the ACVP figures, the
+dependency list, the `unsafe`-only-in-SIMD claim, the Docker workflow (the
+Alpine image builds and runs the suite green) and the benchmark table.
+
 ## [0.4.0] - 2026-08-31
 
 Second audit round (algebraic, side-channel, memory-safety, coverage) — see

@@ -21,7 +21,10 @@ js = ["getrandom/js"]
 simd = []
 
 [dependencies]
-sha3 = { version = "0.10", default-features = false }
+# Keccak-f[1600] permutation only: the SHAKE sponge lives in `src/shake.rs`
+# so its state can be zeroized (the `sha3` crate does not expose or wipe it).
+# `sha3` is kept as a dev-dependency and the two are compared in tests.
+keccak = { version = "0.1", default-features = false }
 sha2 = { version = "0.10", default-features = false }
 serde = { version = "1", features = ["derive"], optional = true }
 zeroize = { version = "1", features = ["alloc"], default-features = false }

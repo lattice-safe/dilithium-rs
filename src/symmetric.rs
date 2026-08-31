@@ -1,13 +1,16 @@
 //! SHAKE-based symmetric primitives for Dilithium.
 //!
-//! Wraps the `sha3` crate to provide the stream initialization
-//! matching `symmetric-shake.c` from the reference implementation.
-//! Designed for `no_std` + WASM compatibility.
-
-use sha3::digest::{ExtendableOutput, Update, XofReader};
-use sha3::{Shake128, Shake256};
+//! Provides the stream initialization of `symmetric-shake.c` from the
+//! reference implementation, on top of the zeroizing sponge in
+//! [`crate::shake`]. `no_std` + WASM compatible.
+//!
+//! Every state here is wiped on drop, because in Dilithium most of them are
+//! seeded with secret material: `Stream256` is initialized from `rho'`
+//! (ExpandS, ExpandMask) and the incremental state absorbs the long-term key
+//! `K` when deriving `rho'`.
 
 use crate::params::{CRHBYTES, SEEDBYTES};
+use crate::shake::{Shake128, Shake256};
 
 /// A squeezable extendable-output byte source.
 ///
@@ -23,24 +26,22 @@ pub trait XofStream {
 
 /// SHAKE128 stream state.
 pub struct Stream128 {
-    reader: <Shake128 as ExtendableOutput>::Reader,
+    sponge: Shake128,
 }
 
 impl Stream128 {
     /// Initialize SHAKE128 stream: absorb `seed || le16(nonce)`.
     #[must_use]
     pub fn init(seed: &[u8; SEEDBYTES], nonce: u16) -> Self {
-        let mut hasher = Shake128::default();
-        hasher.update(seed);
-        hasher.update(&nonce.to_le_bytes());
-        Self {
-            reader: hasher.finalize_xof(),
-        }
+        let mut sponge = Shake128::new();
+        sponge.absorb(seed);
+        sponge.absorb(&nonce.to_le_bytes());
+        Self { sponge }
     }
 
     /// Squeeze bytes from the stream.
     pub fn squeeze(&mut self, out: &mut [u8]) {
-        self.reader.read(out);
+        self.sponge.squeeze(out);
     }
 }
 
@@ -53,24 +54,22 @@ impl XofStream for Stream128 {
 
 /// SHAKE256 stream state.
 pub struct Stream256 {
-    reader: <Shake256 as ExtendableOutput>::Reader,
+    sponge: Shake256,
 }
 
 impl Stream256 {
     /// Initialize SHAKE256 stream: absorb `seed || le16(nonce)`.
     #[must_use]
     pub fn init(seed: &[u8; CRHBYTES], nonce: u16) -> Self {
-        let mut hasher = Shake256::default();
-        hasher.update(seed);
-        hasher.update(&nonce.to_le_bytes());
-        Self {
-            reader: hasher.finalize_xof(),
-        }
+        let mut sponge = Shake256::new();
+        sponge.absorb(seed);
+        sponge.absorb(&nonce.to_le_bytes());
+        Self { sponge }
     }
 
     /// Squeeze bytes from the stream.
     pub fn squeeze(&mut self, out: &mut [u8]) {
-        self.reader.read(out);
+        self.sponge.squeeze(out);
     }
 }
 
@@ -83,20 +82,19 @@ impl XofStream for Stream256 {
 
 /// Compute SHAKE256(input) and write to `output`.
 pub fn shake256(output: &mut [u8], input: &[u8]) {
-    let mut hasher = Shake256::default();
-    hasher.update(input);
-    let mut reader = hasher.finalize_xof();
-    reader.read(output);
+    let mut sponge = Shake256::new();
+    sponge.absorb(input);
+    sponge.squeeze(output);
 }
 
 /// Incremental SHAKE256 state for multi-absorb patterns.
 pub struct Shake256State {
-    hasher: Shake256,
+    sponge: Shake256,
 }
 
 /// SHAKE256 XOF reader after finalization.
 pub struct Shake256Reader {
-    reader: <Shake256 as ExtendableOutput>::Reader,
+    sponge: Shake256,
 }
 
 impl Shake256State {
@@ -104,20 +102,20 @@ impl Shake256State {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            hasher: Shake256::default(),
+            sponge: Shake256::new(),
         }
     }
 
     /// Absorb data.
     pub fn absorb(&mut self, data: &[u8]) {
-        self.hasher.update(data);
+        self.sponge.absorb(data);
     }
 
     /// Finalize and return reader for squeezing.
     #[must_use]
     pub fn finalize(self) -> Shake256Reader {
         Shake256Reader {
-            reader: self.hasher.finalize_xof(),
+            sponge: self.sponge,
         }
     }
 }
@@ -131,19 +129,18 @@ impl Default for Shake256State {
 impl Shake256Reader {
     /// Squeeze bytes.
     pub fn squeeze(&mut self, out: &mut [u8]) {
-        self.reader.read(out);
+        self.sponge.squeeze(out);
     }
 }
 
 /// Multi-part SHAKE256: absorb multiple slices, squeeze output.
 /// Used for `H(rho, t1)` => `tr`, and `CRH(tr, pre, msg)` => `mu`, etc.
 pub fn shake256_multi(output: &mut [u8], inputs: &[&[u8]]) {
-    let mut state = Shake256State::new();
+    let mut sponge = Shake256::new();
     for input in inputs {
-        state.absorb(input);
+        sponge.absorb(input);
     }
-    let mut reader = state.finalize();
-    reader.squeeze(output);
+    sponge.squeeze(output);
 }
 
 #[cfg(test)]

@@ -8,8 +8,9 @@
 //! - **FIPS 204 compliant** — supports pure ML-DSA and HashML-DSA (pre-hash)
 //! - **`no_std` compatible** — works on embedded and WASM targets
 //! - **WASM ready** — enable the `js` feature for browser environments
-//! - **Zeroize** — private key material, sampling buffers and packing
-//!   temporaries are zeroized; `Debug` redacts the private key
+//! - **Zeroize** — private key material, sampling buffers, packing
+//!   temporaries and the Keccak sponge state are zeroized; `Debug` redacts
+//!   the private key
 //! - **Constant-time** — constant-time challenge comparison in verification,
 //!   plus branchless norm and hint checks in signing (stronger than the C
 //!   reference, which short-circuits both)
@@ -101,6 +102,9 @@ pub mod reduce;
 #[doc(hidden)]
 pub mod rounding;
 pub mod safe_api;
+#[doc(hidden)]
+pub mod shake;
+
 #[doc(hidden)]
 pub mod sign;
 #[doc(hidden)]
